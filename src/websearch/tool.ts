@@ -14,6 +14,7 @@ import type {
 	ConfigLoadResult,
 	SearchErrorDetails,
 	SearchProgressDetails,
+	SearchProviderEntry,
 	SearchRenderDetails,
 	WebsearchConfig,
 } from "./types.js";
@@ -31,8 +32,37 @@ const Params = Type.Object(
 	{ additionalProperties: false },
 );
 
+const RawParams = Type.Object(
+	{
+		...Params.properties,
+		mode: Type.Optional(
+			Type.Literal("raw", {
+				description:
+					"Omit for normal configured routing. Use raw for direct search-engine results without an additional model-generated answer, including when a previous search returned a refusal or no usable sources.",
+			}),
+		),
+	},
+	{ additionalProperties: false },
+);
+
+const RAW_RETRY_GUIDELINE =
+	'If search returns a refusal or no usable sources, or the user requests direct search-engine results, retry with the same query and mode: "raw". Do not repeat a raw retry for the same query.';
+const RAW_RETRY_HINT =
+	'If these results are a refusal or have no usable sources, retry with the same query and mode: "raw" to use direct search-engine results without an additional model-generated answer.';
+
+function isAnswerProvider(entry: Pick<SearchProviderEntry, "provider" | "model">): boolean {
+	if (entry.provider === "perplexity" || entry.provider === "z-ai") return Boolean(entry.model);
+	return (
+		entry.provider === "openai" ||
+		entry.provider === "codex" ||
+		entry.provider === "anthropic" ||
+		entry.provider === "xai"
+	);
+}
+
 export type ConfigProvider = () => ConfigLoadResult;
-type WebSearchTool = ReturnType<typeof defineTool<typeof Params, SearchRenderDetails>>;
+type ToolParams = typeof Params | typeof RawParams;
+type WebSearchTool = ReturnType<typeof defineTool<ToolParams, SearchRenderDetails>>;
 
 function nativeModelFromContext(model: ExtensionContext["model"]): NativeModelInfo | undefined {
 	if (!model) return undefined;
@@ -78,14 +108,19 @@ function searchErrorDetails(query: string, error: string, reason?: SearchErrorDe
 export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 	let routingState: SearchRoutingState | undefined;
 	let routingKey = "";
+	const initialConfig = getConfig();
+	const rawMode = initialConfig.ok && initialConfig.config.rawMode === true;
 
-	return defineTool<typeof Params, SearchRenderDetails>({
+	return defineTool<ToolParams, SearchRenderDetails>({
 		name: "web_search",
 		label: "Web Search",
 		description: "Search the web for current information and return source URLs for citation.",
 		promptSnippet: "Search the web for current information, documentation, news, or external facts.",
-		promptGuidelines: ["After using web_search, cite relevant returned URLs in the final answer."],
-		parameters: Params,
+		promptGuidelines: [
+			"After using web_search, cite relevant returned URLs in the final answer.",
+			...(rawMode ? [RAW_RETRY_GUIDELINE] : []),
+		],
+		parameters: rawMode ? RawParams : Params,
 		async execute(_toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
 			if (params.allowed_domains?.length && params.blocked_domains?.length) {
 				const message = "Error: Cannot specify both allowed_domains and blocked_domains in the same request";
@@ -99,8 +134,24 @@ export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 				return { content: [{ type: "text", text: loaded.message }], details };
 			}
 
-			const maxResults = loaded.config.providers[0]?.maxResults ?? 10;
-			const config = await configWithNativeRoute(loaded.config, ctx);
+			const raw = "mode" in params && params.mode === "raw";
+			if (raw && (!rawMode || !loaded.config.rawMode)) {
+				const message = 'Raw search mode is disabled. Enable "rawMode": true in websearch.json.';
+				return { content: [{ type: "text", text: message }], details: searchErrorDetails(params.query, message) };
+			}
+			const config = raw
+				? {
+						...loaded.config,
+						auto: false,
+						providers: loaded.config.providers.filter((entry) => !isAnswerProvider(entry)),
+					}
+				: await configWithNativeRoute(loaded.config, ctx);
+			if (config.providers.length === 0) {
+				const message =
+					"No direct search-engine providers configured for raw mode. Configure a provider such as duckduckgo-html or brave.";
+				return { content: [{ type: "text", text: message }], details: searchErrorDetails(params.query, message) };
+			}
+			const maxResults = (raw ? config : loaded.config).providers[0]?.maxResults ?? 10;
 			const progressDetails: SearchProgressDetails = {
 				phase: "searching",
 				query: params.query,
@@ -148,7 +199,11 @@ export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 					});
 				},
 			);
-			return { content: [{ type: "text", text: formatSearchText(details) }], details };
+			const usedAnswerProvider = config.providers.some(
+				(entry) => entry.provider === details.provider && entry.id === details.entryId && isAnswerProvider(entry),
+			);
+			const hint = rawMode && !raw && usedAnswerProvider ? `\n\n${RAW_RETRY_HINT}` : "";
+			return { content: [{ type: "text", text: formatSearchText(details) + hint }], details };
 		},
 		renderCall: (args, theme) => renderSearchCall(args, theme),
 		renderResult: (result, options, theme) => renderSearchResult(result, options, theme),

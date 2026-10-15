@@ -127,6 +127,27 @@ describe("websearch extension UI", () => {
 	});
 });
 
+describe("raw schema registration", () => {
+	it("#given raw mode configured #when sessions start #then re-registers opt-in schema and resets it when disabled", async () => {
+		let sessionStart: SessionHandler | undefined;
+		const registerTool = vi.fn();
+		websearchExtension({
+			registerTool,
+			registerCommand: vi.fn(),
+			on(eventName: string, handler: unknown) {
+				if (eventName === "session_start") sessionStart = handler as SessionHandler;
+			},
+		} as never);
+		const ctx = { cwd: "/tmp/raw", hasUI: false, model: { provider: "xai" } };
+		loadWebsearchConfig.mockResolvedValue({ ...activeConfig, config: { ...activeConfig.config, rawMode: true } });
+		await sessionStart?.({}, ctx);
+		expect(registerTool.mock.lastCall?.[0].parameters.properties).toHaveProperty("mode");
+		loadWebsearchConfig.mockResolvedValue(activeConfig);
+		await sessionStart?.({}, ctx);
+		expect(registerTool.mock.lastCall?.[0].parameters.properties).not.toHaveProperty("mode");
+	});
+});
+
 describe("websearch /websearch status provider labels", () => {
 	beforeEach(() => {
 		loadWebsearchConfig.mockReset();

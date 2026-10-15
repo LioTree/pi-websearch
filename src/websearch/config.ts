@@ -156,6 +156,9 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 
 function configFromObject(raw: JsonObject): WebsearchConfig | null {
 	const auto = optionalBoolean(raw["auto"]) ?? true;
+	const rawMode = raw["rawMode"];
+	if (rawMode !== undefined && typeof rawMode !== "boolean") return null;
+	const rawModeOption = rawMode === undefined ? {} : { rawMode };
 	const providersValue = raw["providers"];
 	const rawProviders = Array.isArray(providersValue) ? providersValue : undefined;
 	if (rawProviders) {
@@ -165,11 +168,11 @@ function configFromObject(raw: JsonObject): WebsearchConfig | null {
 			.filter((entry): entry is SearchProviderEntry => entry !== null);
 		const strategy = optionalStrategy(raw["strategy"]) ?? "priority";
 		const fallback = optionalBoolean(raw["fallback"]) ?? true;
-		return { strategy, fallback, auto, providers };
+		return { strategy, fallback, auto, ...rawModeOption, providers };
 	}
 
 	const provider = providerEntryFromObject(raw);
-	return provider ? { strategy: "priority", fallback: true, auto, providers: [provider] } : null;
+	return provider ? { strategy: "priority", fallback: true, auto, ...rawModeOption, providers: [provider] } : null;
 }
 
 function hasApiKey(config: SearchProviderConfig): boolean {
@@ -237,6 +240,9 @@ export function validateWebsearchConfig(
 	}
 	if (typeof config.auto !== "boolean") {
 		return { ok: false, reason: "invalid_config", message: "Websearch config auto must be a boolean." };
+	}
+	if (config.rawMode !== undefined && typeof config.rawMode !== "boolean") {
+		return { ok: false, reason: "invalid_config", message: "Websearch config rawMode must be a boolean." };
 	}
 	if (config.providers.length === 0) {
 		return { ok: false, reason: "invalid_config", message: "Websearch config requires at least one provider." };

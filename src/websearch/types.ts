@@ -44,6 +44,8 @@ export interface WebsearchConfig {
 	strategy: RoutingStrategy;
 	fallback: boolean;
 	auto: boolean;
+	/** Opt in to the model-facing mode: "raw" escape hatch. */
+	rawMode?: boolean;
 	providers: SearchProviderEntry[];
 }
 

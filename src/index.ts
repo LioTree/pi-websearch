@@ -55,6 +55,8 @@ export default function (pi: ExtensionAPI): void {
 		state = isProviderNativeBypass(ctx.model)
 			? { ok: false, reason: "provider_native_bypass", message: NATIVE_BYPASS_MESSAGE }
 			: await loadWebsearchConfig({ cwd: ctx.cwd });
+		// Re-register after loading config so raw mode is absent from the default schema.
+		pi.registerTool(createWebSearchTool(() => state));
 		updateUi(ctx);
 	});
 

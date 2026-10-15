@@ -4,7 +4,7 @@ Provider-backed `web_search` tool for pi. It starts with zero configuration: Ope
 
 ## Tool Schema
 
-The public tool schema matches free-code:
+By default, the public tool schema matches free-code:
 
 ```json
 {
@@ -64,6 +64,32 @@ Multiple provider entries enable fallback and routing:
 	]
 }
 ```
+
+### Opt-in raw search mode
+
+Set `"rawMode": true` to expose an optional `mode: "raw"` tool parameter. This is disabled by default: omitting the setting or setting it to `false` preserves the existing tool schema, guidelines, and routing.
+
+Example `.pi/websearch.json` or `~/.pi/websearch.json`:
+
+```json
+{
+	"rawMode": true,
+	"auto": true,
+	"providers": [{ "provider": "duckduckgo-html" }]
+}
+```
+
+Normal calls still use the existing routing, including native auto-discovery and configured fallback. If a model-backed search returns a refusal or no usable sources, the agent can retry explicitly:
+
+```json
+{ "query": "the same search query", "mode": "raw" }
+```
+
+Raw mode skips native auto-discovery and filters model-answer adapters out of the configured provider list. It uses the remaining direct-search providers, preserving their order, priorities, routing strategy, fallback policy, and domain filters. It returns titles, URLs, and snippets without an additional model-generated answer; snippets may still be processed by the search service itself. It does not fetch full pages or guarantee verbatim page text.
+
+Direct-search providers include DuckDuckGo HTML, Brave, Exa, Tavily, SERPdive, Serper, Google CSE, Kagi, Kimi's search endpoint, and Perplexity/Z.ai entries without a `model`. OpenAI, Codex, Anthropic, xAI, and Perplexity/Z.ai entries with a `model` are excluded. If no direct-search providers remain, the tool reports an actionable configuration error rather than silently adding a backend or returning to a model-answer provider.
+
+When enabled, the tool guidelines describe when to retry, and model-answer results include a raw-mode retry hint. There is no heuristic refusal detection or automatic refusal fallback. The parameter is optional; omitting it always preserves normal routing. Restart or reload the extension after changing the setting. Existing OpenAI/Anthropic session delegation remains unchanged, so this option does not alter their built-in tools.
 
 ### Native auto-route
 
