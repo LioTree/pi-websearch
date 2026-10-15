@@ -52,9 +52,11 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool(createWebSearchTool(() => state));
 
 	pi.on("session_start", async (_event, ctx) => {
-		state = isProviderNativeBypass(ctx.model)
-			? { ok: false, reason: "provider_native_bypass", message: NATIVE_BYPASS_MESSAGE }
-			: await loadWebsearchConfig({ cwd: ctx.cwd });
+		const loaded = await loadWebsearchConfig({ cwd: ctx.cwd });
+		state =
+			isProviderNativeBypass(ctx.model) && !(loaded.ok && loaded.config.rawMode === true)
+				? { ok: false, reason: "provider_native_bypass", message: NATIVE_BYPASS_MESSAGE }
+				: loaded;
 		// Re-register after loading config so raw mode is absent from the default schema.
 		pi.registerTool(createWebSearchTool(() => state));
 		updateUi(ctx);

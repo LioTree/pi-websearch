@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import websearchExtension from "../src/index.js";
+import type { createWebSearchTool } from "../src/websearch/tool.js";
 import type { ConfigLoadResult } from "../src/websearch/types.js";
 
 type SessionHandler = (event: object, ctx: object) => Promise<void> | void;
@@ -128,6 +129,81 @@ describe("websearch extension UI", () => {
 });
 
 describe("raw schema registration", () => {
+	it.each(["openai", "anthropic"])(
+		"#given %s without rawMode #when session starts #then preserves native delegation",
+		async (provider) => {
+			let sessionStart: SessionHandler | undefined;
+			let tool: ReturnType<typeof createWebSearchTool> | undefined;
+			loadWebsearchConfig.mockResolvedValue(activeConfig);
+			websearchExtension({
+				registerTool(definition: ReturnType<typeof createWebSearchTool>) {
+					tool = definition;
+				},
+				registerCommand: vi.fn(),
+				on(eventName: string, handler: unknown) {
+					if (eventName === "session_start") sessionStart = handler as SessionHandler;
+				},
+			} as never);
+			await sessionStart?.({}, { cwd: "/tmp/raw", hasUI: false, model: { provider } });
+			expect(tool?.parameters.properties).not.toHaveProperty("mode");
+			const result = await tool?.execute("default", { query: "test query" }, undefined, undefined, {} as never);
+			expect(JSON.stringify(result?.content)).toContain("built-in provider extension");
+		},
+	);
+
+	it.each(["openai", "anthropic"])(
+		"#given %s and rawMode enabled #when session starts #then exposes and executes raw instead of bypassing",
+		async (provider) => {
+			let sessionStart: SessionHandler | undefined;
+			let tool: ReturnType<typeof createWebSearchTool> | undefined;
+			loadWebsearchConfig.mockResolvedValue({
+				ok: true,
+				source: "test",
+				config: {
+					...activeConfig.config,
+					rawMode: true,
+					providers: [{ provider: "brave", apiKey: "test" }],
+				},
+			});
+			websearchExtension({
+				registerTool(definition: ReturnType<typeof createWebSearchTool>) {
+					tool = definition;
+				},
+				registerCommand: vi.fn(),
+				on(eventName: string, handler: unknown) {
+					if (eventName === "session_start") sessionStart = handler as SessionHandler;
+				},
+			} as never);
+			await sessionStart?.({}, { cwd: "/tmp/raw", hasUI: false, model: { provider } });
+			expect(tool?.parameters.properties).toHaveProperty("mode");
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(
+					async () =>
+						new Response(
+							JSON.stringify({
+								web: { results: [{ title: "Direct", url: "https://example.com", description: "snippet" }] },
+							}),
+						),
+				),
+			);
+			try {
+				const result = await tool?.execute(
+					"raw",
+					{ query: "test query", mode: "raw" },
+					undefined,
+					undefined,
+					{} as never,
+				);
+				expect(JSON.stringify(result?.content)).toContain("https://example.com");
+				expect(JSON.stringify(result?.content)).not.toContain("built-in provider extension");
+				expect(fetch).toHaveBeenCalledTimes(1);
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		},
+	);
+
 	it("#given raw mode configured #when sessions start #then re-registers opt-in schema and resets it when disabled", async () => {
 		let sessionStart: SessionHandler | undefined;
 		const registerTool = vi.fn();

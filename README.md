@@ -1,6 +1,6 @@
 # pi-websearch
 
-Provider-backed `web_search` tool for pi. It starts with zero configuration: OpenAI and Anthropic sessions defer silently to senpi's built-in provider-native web search, while other providers use the built-in DuckDuckGo HTML backend unless a config file overrides it.
+Provider-backed `web_search` tool for pi. It starts with zero configuration: OpenAI and Anthropic sessions defer silently to senpi's built-in provider-native web search unless raw mode is explicitly enabled, while other providers use the built-in DuckDuckGo HTML backend unless a config file overrides it.
 
 ## Tool Schema
 
@@ -89,11 +89,11 @@ Raw mode skips native auto-discovery and filters model-answer adapters out of th
 
 Direct-search providers include DuckDuckGo HTML, Brave, Exa, Tavily, SERPdive, Serper, Google CSE, Kagi, Kimi's search endpoint, and Perplexity/Z.ai entries without a `model`. OpenAI, Codex, Anthropic, xAI, and Perplexity/Z.ai entries with a `model` are excluded. If no direct-search providers remain, the tool reports an actionable configuration error rather than silently adding a backend or returning to a model-answer provider.
 
-When enabled, the tool guidelines describe when to retry, and model-answer results include a raw-mode retry hint. There is no heuristic refusal detection or automatic refusal fallback. The parameter is optional; omitting it always preserves normal routing. Restart or reload the extension after changing the setting. Existing OpenAI/Anthropic session delegation remains unchanged, so this option does not alter their built-in tools.
+When enabled, the tool guidelines describe when to retry, and model-answer results include a raw-mode retry hint. There is no heuristic refusal detection or automatic refusal fallback. The parameter is optional; omitting it always preserves normal routing. Restart or reload the extension after changing the setting. In OpenAI/Anthropic sessions, enabling `rawMode` opts this extension out of its usual delegation: it exposes the switchable function tool and uses its existing native auto-route for normal calls. Their built-in hosted tools, if also enabled by the runtime, are not modified by this setting.
 
 ### Native auto-route
 
-If the active model provider is `openai` or `anthropic`, pi-websearch registers no startup warning and defers to senpi's built-in `openai-web-search` or `anthropic-web-search` extension. Those built-ins wire the provider-native tool directly into supported model requests, so this extension only handles non-native providers and explicit override configs.
+If the active model provider is `openai` or `anthropic` and `rawMode` is not enabled, pi-websearch registers no startup warning and defers to senpi's built-in `openai-web-search` or `anthropic-web-search` extension. Those built-ins wire the provider-native tool directly into supported model requests, so this extension only handles non-native providers and explicit override configs.
 
 When `auto` is `true` (the default) and the active pi model exposes a server-hosted search tool, the extension prepends an implicit `{ id: "native", ... }` entry that reuses the model's resolved API key via `ExtensionContext.modelRegistry.getApiKeyAndHeaders`. The native entry tries first; on failure or when the model does not match, the configured providers handle the search. Disable with `"auto": false` if you want only the explicit `providers` list.
 
