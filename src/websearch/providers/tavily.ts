@@ -1,7 +1,7 @@
 import { providerUrl } from "../provider-endpoints.js";
 import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.js";
 import type { BuildContext, ProviderModule } from "./shared.js";
-import { clamp, collect, contentHeaders, getArray, getNumber, getObject, getString, result } from "./shared.js";
+import { bearerHeaders, clamp, collect, getArray, getNumber, getObject, getString, result } from "./shared.js";
 
 export const tavilyProvider: ProviderModule = {
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
@@ -10,7 +10,7 @@ export const tavilyProvider: ProviderModule = {
 		if (blockedDomains) body["exclude_domains"] = blockedDomains;
 		return {
 			url: providerUrl(config),
-			init: { method: "POST", headers: contentHeaders({ Authorization: `Bearer ${config.apiKey ?? ""}` }) },
+			init: { method: "POST", headers: bearerHeaders(config) },
 			body,
 		};
 	},

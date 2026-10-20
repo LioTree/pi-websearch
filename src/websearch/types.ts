@@ -6,8 +6,10 @@ export type SearchProvider =
 	| "duckduckgo-html"
 	| "serper"
 	| "google-cse"
+	| "deepseek"
 	| "z-ai"
 	| "openai"
+	| "openai-codex"
 	| "codex"
 	| "anthropic"
 	| "perplexity"
@@ -19,10 +21,55 @@ export type SearchContextSize = "low" | "medium" | "high";
 export type CodexSearchMode = "cached" | "live";
 export type RoutingStrategy = "priority" | "round-robin" | "fill-first";
 
+export type NativeSearchAdapter =
+	| "openai"
+	| "codex"
+	| "anthropic"
+	| "xai"
+	| "perplexity"
+	| "z-ai"
+	| "kimi"
+	| "deepseek";
+
+export interface SearchPolicy {
+	maxResults?: number;
+	timeoutMs?: number;
+	allowedDomains?: string[];
+	blockedDomains?: string[];
+}
+
+export interface NativeSearchOverride {
+	adapter: NativeSearchAdapter;
+	/** Complete search endpoint; otherwise derive it from the active provider's resolved URL. */
+	endpoint?: string;
+	/** Explicit opt-in to a different search model. Defaults to the active model ID. */
+	model?: string;
+}
+
+export interface NativeRouteStatus {
+	status: "ready" | "skipped";
+	provider?: string;
+	model?: string;
+	adapter?: NativeSearchAdapter;
+	reason?: string;
+}
+
+export type SearchFailureKind =
+	| "unsupported"
+	| "auth"
+	| "quota"
+	| "network"
+	| "timeout"
+	| "invalid-response"
+	| "no-results"
+	| "refusal"
+	| "request";
+
 export interface SearchProviderConfig {
 	id?: string;
 	provider: SearchProvider;
 	apiKey?: string;
+	headers?: Record<string, string | null>;
 	baseUrl?: string;
 	searchEngineId?: string;
 	maxResults?: number;
@@ -40,12 +87,13 @@ export interface SearchProviderEntry extends SearchProviderConfig {
 	weight?: number;
 }
 
-export interface WebsearchConfig {
+export interface WebsearchConfig extends SearchPolicy {
 	strategy: RoutingStrategy;
 	fallback: boolean;
 	auto: boolean;
 	/** Opt in to the model-facing mode: "raw" escape hatch. */
 	rawMode?: boolean;
+	nativeOverrides?: Record<string, NativeSearchOverride | false>;
 	providers: SearchProviderEntry[];
 }
 
@@ -65,6 +113,8 @@ export interface SearchRequest {
 
 export interface BuiltSearchRequest {
 	url: string;
+	/** Codex subscription endpoints require an incrementally decoded SSE response. */
+	responseFormat?: "codex-sse";
 	init: {
 		method: "GET" | "POST";
 		headers: Record<string, string>;
@@ -92,6 +142,11 @@ export interface SearchDetails {
 	attempts?: SearchAttempt[];
 	answer?: string;
 	error?: string;
+	failureKind?: SearchFailureKind;
+	httpStatus?: number;
+	stage?: "native" | "fallback";
+	mode?: "normal" | "raw";
+	native?: NativeRouteStatus;
 }
 
 export interface SearchProgressDetails {
@@ -105,13 +160,11 @@ export interface SearchProgressDetails {
 	strategy?: RoutingStrategy;
 	allowedDomains?: string[];
 	blockedDomains?: string[];
+	native?: NativeRouteStatus;
+	mode?: "normal" | "raw";
 }
 
-export type ConfigLoadFailureReason =
-	| "missing_config"
-	| "invalid_config"
-	| "missing_api_key"
-	| "provider_native_bypass";
+export type ConfigLoadFailureReason = "missing_config" | "invalid_config" | "missing_api_key";
 
 export interface SearchErrorDetails {
 	phase: "error";
@@ -128,6 +181,9 @@ export interface SearchAttempt {
 	durationMs: number;
 	resultsCount: number;
 	error?: string;
+	failureKind?: SearchFailureKind;
+	httpStatus?: number;
+	stage?: "native" | "fallback";
 }
 
 export type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];

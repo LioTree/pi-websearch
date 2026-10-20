@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSearchRequest, normalizeSearchResponse } from "../src/websearch/providers.js";
+import { EmptyDomainPolicyError } from "../src/websearch/domains.js";
+import { buildSearchRequest, isDirectSearchProvider, normalizeSearchResponse } from "../src/websearch/providers.js";
 import type { SearchProvider, SearchProviderConfig } from "../src/websearch/types.js";
 
 function configFor(provider: SearchProvider): SearchProviderConfig {
 	if (provider === "exa") return { provider };
+	if (provider === "openai-codex")
+		return { provider, headers: { Authorization: "Bearer test-token", "chatgpt-account-id": "test-account" } };
 	if (provider === "google-cse") return { provider, apiKey: "google-test", searchEngineId: "cx-test" };
 	return { provider, apiKey: `${provider}-test` };
 }
@@ -22,11 +25,13 @@ describe("buildSearchRequest", () => {
 			"z-ai",
 			"openai",
 			"codex",
+			"openai-codex",
 			"anthropic",
 			"perplexity",
 			"xai",
 			"kimi",
 			"kagi",
+			"deepseek",
 		];
 
 		for (const provider of providers) {
@@ -85,7 +90,10 @@ describe("buildSearchRequest", () => {
 		// then
 		expect(request.url).toBe("https://api.serpdive.com/v1/search");
 		expect(request.init.headers).toHaveProperty("Authorization", "Bearer sd-test");
-		expect(request.body).toEqual({ query: "current docs site:docs.example.com", max_results: 10 });
+		expect(request.body).toEqual({
+			query: "current docs site:docs.example.com -site:reddit.com",
+			max_results: 10,
+		});
 	});
 
 	it("#given allowed domain filter #when building brave request #then maps filter into provider query", () => {
@@ -156,10 +164,15 @@ describe("buildSearchRequest", () => {
 		});
 
 		// then
-		expect(request.body).toEqual({ query: "sdk docs", numResults: 3, includeDomains: ["api.example.com"] });
+		expect(request.body).toEqual({
+			query: "sdk docs",
+			numResults: 3,
+			includeDomains: ["api.example.com"],
+			excludeDomains: ["docs.example.com"],
+		});
 	});
 
-	it("#given config blocklist and request allowlist #when building request #then blocked domains cannot be reintroduced", () => {
+	it("#given config blocklist and request allowlist #when building request #then blocked domains remain excluded", () => {
 		// given
 		const config: SearchProviderConfig = {
 			provider: "brave",
@@ -175,8 +188,9 @@ describe("buildSearchRequest", () => {
 		});
 
 		// then
-		expect(request.url).not.toContain("blocked.example.com");
 		expect(request.url).toContain("site%3Anodejs.org");
+		expect(request.url).toContain("-site%3Ablocked.example.com");
+		expect(request.url.match(/site%3Ablocked\.example\.com/g)).toHaveLength(1);
 	});
 
 	it("#given z-ai config #when building request #then uses web search endpoint and bearer token", () => {
@@ -559,7 +573,7 @@ describe("normalizeSearchResponse", () => {
 		expect(results).toEqual([{ title: "OpenAI", url: "https://openai.com", snippet: "Answer with source" }]);
 	});
 
-	it("#given openai response with searched URL in text #when normalizing #then extracts source URL", () => {
+	it("#given openai response with a URL only in prose #when normalizing #then ignores the unverified URL", () => {
 		// given
 		const payload = {
 			output: [
@@ -575,12 +589,51 @@ describe("normalizeSearchResponse", () => {
 		const results = normalizeSearchResponse("openai", payload);
 
 		// then
+		expect(results).toEqual([]);
+	});
+
+	it("#given a gateway that ignored the hosted tool and returned prose URLs #when normalizing #then returns no sources", () => {
+		// given
+		const payload = {
+			output: [
+				{
+					type: "message",
+					content: [
+						{
+							type: "output_text",
+							text: "Here are links: https://fake.example.com and https://other.example.com",
+							annotations: [],
+						},
+					],
+				},
+			],
+		};
+
+		// when
+		const results = normalizeSearchResponse("openai", payload);
+
+		// then
+		expect(results).toEqual([]);
+	});
+
+	it("#given structured web search sources #when normalizing #then returns those sources", () => {
+		// given
+		const payload = {
+			output: [
+				{
+					type: "web_search_call",
+					action: { sources: [{ url: "https://source.example.com" }, { url: "https://second.example.com" }] },
+				},
+			],
+		};
+
+		// when
+		const results = normalizeSearchResponse("openai", payload);
+
+		// then
 		expect(results).toEqual([
-			{
-				title: "https://ohmyopenagent.com/",
-				url: "https://ohmyopenagent.com/",
-				snippet: "https://ohmyopenagent.com/",
-			},
+			{ title: "https://source.example.com", url: "https://source.example.com" },
+			{ title: "https://second.example.com", url: "https://second.example.com" },
 		]);
 	});
 
@@ -656,7 +709,14 @@ describe("normalizeSearchResponse", () => {
 		const results = normalizeSearchResponse("anthropic", payload);
 
 		// then
-		expect(results).toEqual([{ title: "Anthropic", url: "https://docs.anthropic.com", snippet: "2026-01-01" }]);
+		expect(results).toEqual([
+			{
+				title: "Anthropic",
+				url: "https://docs.anthropic.com",
+				snippet: "Answer with Anthropic source",
+				publishedAt: "2026-01-01",
+			},
+		]);
 	});
 
 	it("#given z-ai chat completion response #when normalizing #then uses web search citations", () => {
@@ -726,5 +786,531 @@ describe("normalizeSearchResponse", () => {
 				publishedAt: "2026-01-01T00:00:00Z",
 			},
 		]);
+	});
+});
+
+describe("isDirectSearchProvider", () => {
+	it("#given hosted and direct entries #when classifying #then preserves Z.ai and Perplexity model-vs-direct semantics", () => {
+		// given
+		const cases: Array<{ entry: { provider: SearchProvider; model?: string }; direct: boolean }> = [
+			{ entry: { provider: "openai" }, direct: false },
+			{ entry: { provider: "openai", model: "gpt-5.5" }, direct: false },
+			{ entry: { provider: "codex", model: "gpt-5.5" }, direct: false },
+			{ entry: { provider: "anthropic", model: "claude-sonnet-5" }, direct: false },
+			{ entry: { provider: "xai", model: "grok-4.3" }, direct: false },
+			{ entry: { provider: "z-ai" }, direct: true },
+			{ entry: { provider: "z-ai", model: "glm-4.6" }, direct: false },
+			{ entry: { provider: "perplexity" }, direct: true },
+			{ entry: { provider: "perplexity", model: "sonar-pro" }, direct: false },
+			{ entry: { provider: "kimi", model: "k3" }, direct: true },
+			{ entry: { provider: "exa" }, direct: true },
+			{ entry: { provider: "duckduckgo-html" }, direct: true },
+		];
+
+		for (const testCase of cases) {
+			// when
+			const direct = isDirectSearchProvider(testCase.entry);
+
+			// then
+			expect(direct).toBe(testCase.direct);
+		}
+	});
+});
+
+describe("provider auth headers", () => {
+	it("#given case-insensitive config headers #when building a request #then config overrides defaults and null deletes them", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "openai",
+			apiKey: "openai-key",
+			headers: { authorization: "Bearer gateway-token", "content-type": null },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).toHaveProperty("authorization", "Bearer gateway-token");
+		expect(request.init.headers).not.toHaveProperty("Authorization");
+		expect(request.init.headers).not.toHaveProperty("Content-Type");
+		expect(request.init.headers).toHaveProperty("Accept", "application/json");
+	});
+
+	it("#given a null Authorization tombstone and an API key #when building a request #then does not recreate the deleted header", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "openai",
+			apiKey: "openai-key",
+			headers: { Authorization: null },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).not.toHaveProperty("Authorization");
+	});
+
+	it("#given Cloudflare gateway auth #when building an OpenAI request #then keeps the provider Bearer alongside it", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "openai",
+			apiKey: "openai-key",
+			headers: { "cf-aig-authorization": "Bearer gateway-token" },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).toHaveProperty("Authorization", "Bearer openai-key");
+		expect(request.init.headers).toHaveProperty("cf-aig-authorization", "Bearer gateway-token");
+	});
+
+	it("#given an explicit x-api-key header #when building an OpenAI request #then does not also add a bearer token", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "openai",
+			apiKey: "openai-key",
+			headers: { "x-api-key": "gateway-key" },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).toHaveProperty("x-api-key", "gateway-key");
+		expect(request.init.headers).not.toHaveProperty("Authorization");
+	});
+
+	it("#given an Anthropic API key #when building a request #then uses x-api-key only", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "anthropic", apiKey: "sk-ant-api03-test" };
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).toHaveProperty("x-api-key", "sk-ant-api03-test");
+		expect(request.init.headers).not.toHaveProperty("Authorization");
+		expect(request.init.headers).toHaveProperty("anthropic-version", "2023-06-01");
+	});
+
+	it("#given an Anthropic OAuth token #when building a request #then supplies client defaults and honors an explicit beta", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "anthropic",
+			apiKey: "sk-ant-oat01-test",
+			headers: { "anthropic-beta": "custom-beta" },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).toHaveProperty("Authorization", "Bearer sk-ant-oat01-test");
+		expect(request.init.headers).not.toHaveProperty("x-api-key");
+		expect(request.init.headers["anthropic-beta"]).toContain("custom-beta");
+		expect(request.init.headers["anthropic-beta"]).toContain("claude-code-20250219");
+		expect(request.init.headers["anthropic-beta"]).toContain("oauth-2025-04-20");
+		expect(request.init.headers["user-agent"]).toMatch(/^claude-cli\//);
+		expect(request.init.headers).toHaveProperty("x-app", "cli");
+	});
+
+	it("#given Anthropic OAuth without an explicit beta #when building a request #then supplies the required betas", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "anthropic", apiKey: "sk-ant-oat01-test" };
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers["anthropic-beta"]).toContain("claude-code-20250219");
+		expect(request.init.headers["anthropic-beta"]).toContain("oauth-2025-04-20");
+	});
+
+	it("#given Anthropic OAuth with a null beta tombstone #when building a request #then does not add the required betas", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "anthropic",
+			apiKey: "sk-ant-oat01-test",
+			headers: { "anthropic-beta": null },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).not.toHaveProperty("anthropic-beta");
+		expect(request.init.headers).toHaveProperty("Authorization", "Bearer sk-ant-oat01-test");
+	});
+
+	it("#given Anthropic OAuth with an explicit x-api-key #when building a request #then honors it and adds no Bearer", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "anthropic",
+			apiKey: "sk-ant-oat01-test",
+			headers: { "x-api-key": "proxy-key" },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).toHaveProperty("x-api-key", "proxy-key");
+		expect(request.init.headers).not.toHaveProperty("Authorization");
+		expect(request.init.headers["anthropic-beta"]).toContain("claude-code-20250219");
+	});
+
+	it("#given Anthropic OAuth with an explicit Authorization override #when building a request #then preserves it", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "anthropic",
+			apiKey: "sk-ant-oat01-test",
+			headers: { Authorization: "Bearer proxy-token" },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).toHaveProperty("Authorization", "Bearer proxy-token");
+		expect(request.init.headers).not.toHaveProperty("x-api-key");
+	});
+
+	it("#given Anthropic OAuth with a null Authorization tombstone #when building a request #then does not recreate the header", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "anthropic",
+			apiKey: "sk-ant-oat01-test",
+			headers: { Authorization: null },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).not.toHaveProperty("Authorization");
+		expect(request.init.headers).not.toHaveProperty("x-api-key");
+	});
+
+	it("#given header-only Anthropic auth #when building a request #then preserves the header and adds no x-api-key", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "anthropic",
+			headers: { Authorization: "Bearer external-token" },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).toHaveProperty("Authorization", "Bearer external-token");
+		expect(request.init.headers).not.toHaveProperty("x-api-key");
+		expect(request.init.headers).toHaveProperty("anthropic-version", "2023-06-01");
+	});
+
+	it("#given header-only Kimi auth #when building a request #then preserves the header without adding an empty bearer", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "kimi",
+			headers: { Authorization: "Bearer kimi-oauth" },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "headers", maxResults: 1 });
+
+		// then
+		expect(request.init.headers).toHaveProperty("Authorization", "Bearer kimi-oauth");
+		expect(request.init.headers).not.toHaveProperty("Authorization", "Bearer ");
+	});
+});
+
+describe("perplexity citations", () => {
+	it("#given a chat completion with citations #when normalizing #then returns the citation URLs", () => {
+		// given
+		const payload = {
+			choices: [{ message: { content: "Answer with sources" } }],
+			citations: ["https://one.example.com", "https://two.example.com"],
+		};
+
+		// when
+		const results = normalizeSearchResponse("perplexity", payload);
+
+		// then
+		expect(results).toEqual([
+			{ title: "https://one.example.com", url: "https://one.example.com", snippet: "Answer with sources" },
+			{ title: "https://two.example.com", url: "https://two.example.com", snippet: "Answer with sources" },
+		]);
+	});
+});
+
+describe("domain policy request construction", () => {
+	it("#given hierarchical allowed scopes with mixed case #when building request #then narrows to the canonical child without a sentinel", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "exa", allowedDomains: ["Example.com."] };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "sdk docs",
+			maxResults: 3,
+			allowedDomains: ["Docs.Example.com."],
+		});
+
+		// then
+		expect(request.body).toEqual({ query: "sdk docs", numResults: 3, includeDomains: ["docs.example.com"] });
+		expect(JSON.stringify(request.body)).not.toContain("invalid.invalid");
+	});
+
+	it("#given a narrower provider entry scope #when building request #then it narrows the broader request scope", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "exa", allowedDomains: ["Docs.Example.com"] };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "sdk docs",
+			maxResults: 3,
+			allowedDomains: ["EXAMPLE.com."],
+		});
+
+		// then
+		expect(request.body).toEqual({ query: "sdk docs", numResults: 3, includeDomains: ["docs.example.com"] });
+	});
+
+	it("#given disjoint allowed scopes #when building request #then throws before any request is built", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "exa", allowedDomains: ["example.com"] };
+
+		// when / then
+		expect(() =>
+			buildSearchRequest(config, { query: "sdk docs", maxResults: 3, allowedDomains: ["other.example.net"] }),
+		).toThrow(EmptyDomainPolicyError);
+	});
+
+	it("#given a blocked parent of an allowed child #when building request #then throws an empty policy error", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "exa", blockedDomains: ["example.com"] };
+
+		// when / then
+		expect(() =>
+			buildSearchRequest(config, { query: "sdk docs", maxResults: 3, allowedDomains: ["docs.example.com"] }),
+		).toThrow(EmptyDomainPolicyError);
+	});
+
+	it("#given an allowed parent and a blocked child #when building request #then sends both native filters", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "exa", allowedDomains: ["example.com"] };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "sdk docs",
+			maxResults: 3,
+			blockedDomains: ["ads.example.com"],
+		});
+
+		// then
+		expect(request.body).toEqual({
+			query: "sdk docs",
+			numResults: 3,
+			includeDomains: ["example.com"],
+			excludeDomains: ["ads.example.com"],
+		});
+	});
+
+	it("#given both filters for OpenAI #when building request #then keeps native allowed filters and blocked query exclusions", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "openai", apiKey: "openai-test", model: "gpt-5.5" };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "current docs",
+			maxResults: 5,
+			allowedDomains: ["example.com"],
+			blockedDomains: ["ads.example.com"],
+		});
+
+		// then
+		expect(request.body).toMatchObject({
+			tools: [{ type: "web_search", filters: { allowed_domains: ["example.com"] } }],
+		});
+		expect(request.body).toHaveProperty(
+			"input",
+			"Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: current docs -site:ads.example.com",
+		);
+	});
+
+	it("#given both filters for Anthropic #when building request #then sends allowed natively and blocked in the query", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "anthropic", apiKey: "anthropic-test" };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "current docs",
+			maxResults: 5,
+			allowedDomains: ["example.com"],
+			blockedDomains: ["ads.example.com"],
+		});
+
+		// then
+		expect(request.body).toEqual({
+			model: "claude-sonnet-4-5-20250929",
+			max_tokens: 1024,
+			messages: [{ role: "user", content: "current docs -site:ads.example.com" }],
+			tools: [
+				{
+					type: "web_search_20250305",
+					name: "web_search",
+					max_uses: 8,
+					allowed_domains: ["example.com"],
+				},
+			],
+		});
+	});
+
+	it("#given blocked-only filters for Anthropic #when building request #then keeps the native blocked filter", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "anthropic", apiKey: "anthropic-test" };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "current docs",
+			maxResults: 5,
+			blockedDomains: ["ads.example.com"],
+		});
+
+		// then
+		expect(request.body).toEqual({
+			model: "claude-sonnet-4-5-20250929",
+			max_tokens: 1024,
+			messages: [{ role: "user", content: "current docs" }],
+			tools: [
+				{
+					type: "web_search_20250305",
+					name: "web_search",
+					max_uses: 8,
+					blocked_domains: ["ads.example.com"],
+				},
+			],
+		});
+	});
+
+	it("#given both filters for xAI #when building request #then sends allowed natively and blocked in the input", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "xai", apiKey: "xai-test" };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "current docs",
+			maxResults: 5,
+			allowedDomains: ["example.com"],
+			blockedDomains: ["ads.example.com"],
+		});
+
+		// then
+		expect(request.body).toEqual({
+			model: "grok-4.3",
+			input: "current docs -site:ads.example.com",
+			tools: [{ type: "web_search", filters: { allowed_domains: ["example.com"] } }],
+			tool_choice: "required",
+		});
+	});
+
+	it("#given both filters for Perplexity search #when building request #then sends allowed natively and blocked in the query", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "perplexity", apiKey: "pplx-test" };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "current docs",
+			maxResults: 5,
+			allowedDomains: ["example.com"],
+			blockedDomains: ["ads.example.com"],
+		});
+
+		// then
+		expect(request.body).toEqual({
+			query: "current docs -site:ads.example.com",
+			max_results: 5,
+			search_domain_filter: ["example.com"],
+		});
+	});
+
+	it("#given both filters for Perplexity chat #when building request #then sends allowed natively and blocked in the message", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "perplexity", apiKey: "pplx-test", model: "sonar-pro" };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "current docs",
+			maxResults: 5,
+			allowedDomains: ["example.com"],
+			blockedDomains: ["ads.example.com"],
+		});
+
+		// then
+		expect(request.body).toEqual({
+			model: "sonar-pro",
+			messages: [{ role: "user", content: "current docs -site:ads.example.com" }],
+			search_domain_filter: ["example.com"],
+		});
+	});
+
+	it("#given several allowed domains for Z.ai #when building request #then keeps all alternatives in the query", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "z-ai", apiKey: "zai-test" };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "current docs",
+			maxResults: 5,
+			allowedDomains: ["docs.example.com", "api.example.com"],
+			blockedDomains: ["ads.example.com"],
+		});
+
+		// then
+		expect(request.body).toEqual({
+			search_engine: "search-prime",
+			search_query: "current docs (site:docs.example.com OR site:api.example.com) -site:ads.example.com",
+			count: 5,
+		});
+	});
+
+	it("#given several allowed domains for Kimi #when building request #then ORs the site alternatives and keeps exclusions", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "kimi", apiKey: "kimi-test" };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "current docs",
+			maxResults: 5,
+			allowedDomains: ["docs.example.com", "api.example.com"],
+			blockedDomains: ["ads.example.com"],
+		});
+
+		// then
+		expect(request.body).toEqual({
+			text_query: "current docs (site:docs.example.com OR site:api.example.com) -site:ads.example.com",
+			limit: 5,
+			enable_page_crawling: false,
+			timeout_seconds: 30,
+		});
+	});
+
+	it("#given an allowed parent and a blocked subdomain for Brave #when building request #then keeps the exclusion in the query", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "brave", apiKey: "brave-test" };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "current docs",
+			maxResults: 5,
+			allowedDomains: ["example.com"],
+			blockedDomains: ["ads.example.com"],
+		});
+
+		// then
+		expect(request.url).toContain("site%3Aexample.com");
+		expect(request.url).toContain("-site%3Aads.example.com");
+		expect(request.url).not.toContain("invalid.invalid");
 	});
 });

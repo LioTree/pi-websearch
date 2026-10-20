@@ -1,30 +1,10 @@
 import { providerUrl } from "../provider-endpoints.js";
 import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.js";
 import type { BuildContext, ProviderModule } from "./shared.js";
-import {
-	appendDomainFilters,
-	collect,
-	contentHeaders,
-	getArray,
-	getObject,
-	getString,
-	result,
-	unique,
-} from "./shared.js";
+import { appendDomainFilters, bearerHeaders, collect, getArray, getObject, getString, result } from "./shared.js";
 
 function searchOnlyPrompt(query: string): string {
 	return `Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: ${query}`;
-}
-
-function resultsFromTextUrls(text: string | undefined): SearchResultItem[] {
-	if (!text) return [];
-	const urls = text.match(/https?:\/\/[^\s)\]}>"]+/g) ?? [];
-	return collect(
-		unique(urls).map((url) => {
-			const cleaned = url.replace(/[.,;:]+$/, "");
-			return result(cleaned, cleaned, text);
-		}),
-	);
 }
 
 export function buildResponsesRequest({
@@ -46,7 +26,7 @@ export function buildResponsesRequest({
 
 	return {
 		url: providerUrl(config),
-		init: { method: "POST", headers: contentHeaders({ Authorization: `Bearer ${config.apiKey ?? ""}` }) },
+		init: { method: "POST", headers: bearerHeaders(config) },
 		body: {
 			model: config.model ?? "gpt-5.5",
 			input,
@@ -57,6 +37,10 @@ export function buildResponsesRequest({
 	};
 }
 
+/**
+ * Normalize only structured search and citation sources. Text-only responses are not
+ * evidence that the endpoint honored the hosted search tool, so prose URLs are ignored.
+ */
 export function normalizeResponsesPayload(
 	data: JsonObject,
 	options: { citationsFallback: boolean },
@@ -74,29 +58,40 @@ export function normalizeResponsesPayload(
 			});
 		}),
 	);
-	const message = output.map(getObject).find((item) => item?.["type"] === "message");
-	const content = getArray(message?.["content"])
-		.map(getObject)
-		.find((item) => item?.["type"] === "output_text");
-	const text = getString(content?.["text"]);
+	const contents = output.flatMap((raw) => {
+		const message = getObject(raw);
+		if (message?.["type"] !== "message") return [];
+		return getArray(message["content"])
+			.map(getObject)
+			.filter((item): item is JsonObject => item !== undefined && item["type"] === "output_text");
+	});
+	const text =
+		contents
+			.map((content) => getString(content["text"]) ?? "")
+			.filter(Boolean)
+			.join("\n") || undefined;
 	const annotationResults = collect(
-		getArray(content?.["annotations"]).map((raw) => {
-			const item = getObject(raw);
-			return item?.["type"] === "url_citation"
-				? result(getString(item["title"]), getString(item["url"]), text)
-				: null;
-		}),
+		contents.flatMap((content) =>
+			getArray(content["annotations"]).map((raw) => {
+				const item = getObject(raw);
+				if (item?.["type"] !== "url_citation") return null;
+				const url = getString(item["url"]);
+				return result(getString(item["title"]) ?? url, url, getString(content["text"]));
+			}),
+		),
 	);
-	if (annotationResults.length > 0) return annotationResults;
-	if (sources.length > 0) {
-		return sources.map((source) => {
+	// Citations carry better titles, but must not hide other structured sources.
+	const structured = new Map<string, SearchResultItem>();
+	for (const source of [...annotationResults, ...sources]) {
+		if (!structured.has(source.url)) structured.set(source.url, source);
+	}
+	if (structured.size > 0) {
+		return collect([...structured.values()]).map((source) => {
 			if (source.snippet || text === undefined) return source;
 			return { ...source, snippet: text };
 		});
 	}
-	const textUrls = resultsFromTextUrls(text);
-	if (textUrls.length > 0) return textUrls;
-	if (!options.citationsFallback) return annotationResults;
+	if (!options.citationsFallback) return [];
 	return collect(
 		getArray(data["citations"]).map((raw) => {
 			const url = getString(raw);

@@ -1,16 +1,7 @@
 import { providerUrl } from "../provider-endpoints.js";
 import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.js";
 import type { BuildContext, ProviderModule } from "./shared.js";
-import {
-	appendDomainFilters,
-	clamp,
-	collect,
-	contentHeaders,
-	getArray,
-	getObject,
-	getString,
-	result,
-} from "./shared.js";
+import { appendDomainFilters, clamp, collect, getArray, getObject, getString, keyedHeaders, result } from "./shared.js";
 
 export const serperProvider: ProviderModule = {
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
@@ -20,7 +11,7 @@ export const serperProvider: ProviderModule = {
 		};
 		return {
 			url: providerUrl(config),
-			init: { method: "POST", headers: contentHeaders({ "X-API-KEY": config.apiKey ?? "" }) },
+			init: { method: "POST", headers: keyedHeaders(config, "X-API-KEY") },
 			body,
 		};
 	},

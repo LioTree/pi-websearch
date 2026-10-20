@@ -1,11 +1,11 @@
 import { providerUrl } from "../provider-endpoints.js";
 import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.js";
 import type { BuildContext, ProviderModule } from "./shared.js";
-import { clamp, collect, contentHeaders, getArray, getNumber, getObject, getString, result } from "./shared.js";
+import { clamp, collect, getArray, getNumber, getObject, getString, keyedHeaders, result } from "./shared.js";
 
 export const exaProvider: ProviderModule = {
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
-		const headers = contentHeaders({ "x-api-key": config.apiKey ?? "" });
+		const headers = keyedHeaders(config, "x-api-key");
 		const body: JsonObject = { query: request.query, numResults: clamp(maxResults, 1, 20) };
 		if (allowedDomains) body["includeDomains"] = allowedDomains;
 		if (blockedDomains) body["excludeDomains"] = blockedDomains;

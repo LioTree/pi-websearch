@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Codex/ChatGPT subscription native search for active `openai-codex` models and `adapter: "codex"` overrides. A separate `openai-codex` search backend uses pi-resolved credentials, account identity, Codex request fields, and bounded SSE parsing. OpenAI auth resolved to ChatGPT uses the same transport. Legacy configured `codex` API-key entries are unchanged. Failed/incomplete/truncated streams fall back; cancellation closes the reader without starting another provider.
+- DeepSeek Search API (`POST /v1/tools/search`) as a native adapter for the active `deepseek` provider and as an explicit direct-search backend. Native search inherits pi credentials; renamed gateways opt in with `adapter: "deepseek"`. Raw mode accepts configured DeepSeek entries. Queries including domain operators are limited to 128 Unicode characters without truncation; full page content is not requested.
+
+### Changed
+
+- Configuration is explicit: a missing config file is `missing_config` instead of a hidden DuckDuckGo default. Config parsing rejects invalid providers, entries, unknown keys, booleans, strategies, result limits, timeouts, headers, whitespace-only values, and native overrides with the config path in the error.
+- Credential headers are matched per provider. `User-Agent`, `X-Trace-Id`, and other non-auth headers no longer satisfy missing credentials; `cf-aig-authorization` remains gateway-only. Google CSE requires `apiKey` because the key is sent in the query string.
+- One `web_search` tool is registered for every model. Normal calls try the active model's hosted search first and then the configured provider chain; a native failure no longer disables generic search. `auto: false` disables native routing.
+- Removed `provider_native_bypass`, cross-provider native discovery, and OpenRouter model-id unwrapping. Only the active model is considered, and `fallback: false` now controls retries inside the configured provider chain only; a native failure still falls through to that chain.
+- Each call has a fixed 180-second wall-clock budget covering native credential resolution and all attempts. The effective result count is capped at 50; configured `maxResults` values above 50 are clamped at execution.
+- Native capability is keyed by provider identity plus required model API, not model-id prefixes, and only the active model is considered. Credentials, headers, and resolved base URLs come from pi for that model.
+- `nativeOverrides` opts unrecognized or renamed gateways into a native adapter with an optional complete endpoint and model; `false` disables native per provider. Overrides cannot contain credentials.
+- Provider entries accept `headers` with case-insensitive merge and `null` deletion, including header-only authentication. `cf-aig-authorization` is treated as additive Cloudflare AI Gateway authentication, not a replacement for the provider's primary credential. Authenticated requests refuse redirects.
+- `rawMode: true` is validated at load time and requires at least one direct-search provider. Raw calls skip native routing and filter out model-answer providers. Successful native direct-search adapters no longer get the model-answer raw retry hint.
+- `/websearch status` reports the active model, mode flags, native adapter candidate or skip reason, and provider chain without resolving credentials.
+- Structured source parsing and typed failure diagnostics replace prose-URL harvesting; native and fallback attempts are retained in details.
+- Model-backed Perplexity and Z.ai entries select chat endpoints by default. Anthropic OAuth search includes the CLI identity required by pi's adapter, including header-only tokens; page age is retained as metadata rather than replacing source snippets. Responses citations are collected across output blocks and merged with other structured search sources.
+- Model-backed Perplexity and Z.ai entries default to chat endpoints, not direct-search endpoints. xAI falls back when domain filters exceed the API limit rather than silently dropping domains.
+- Credentials echoed by upstream services are redacted without rewriting unrelated result URLs or snippets, including credentials supplied in endpoint query parameters.
+- The native unsupported cache is limited to five minutes and isolated by account credentials. Only explicit unsupported tool or search failures are cached, not invalid arguments, authentication, or quota failures.
+
+### Limitations
+
+- Codex subscription support follows pi's ChatGPT backend wire format and is covered by mocked transport and real SDK lifecycle tests, not live account verification. Account/model availability and backend changes may cause fallback. Legacy `codex` remains the API-key Responses provider.
+- Provider and gateway behavior is covered by mocked tests only; no live verification is claimed. Provider identity/protocol pairs are candidate adapters, not a whitelist of verified model IDs: only a successful provider response proves hosted search works.
+- Cancellation prevents new search fetches and ignores late results, but pi's public authentication API cannot abort a credential refresh already running.
+- HTTPS/public-host validation is syntactic only: it rejects literal localhost, private-IP, and credentialed URLs but does not resolve or pin DNS and is not full SSRF protection.
+
 ## 0.4.0 - 2026-09-24
 
 ### Added

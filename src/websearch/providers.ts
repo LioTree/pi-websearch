@@ -1,5 +1,7 @@
 import { anthropicProvider } from "./providers/anthropic.js";
 import { braveProvider } from "./providers/brave.js";
+import { codexSubscriptionProvider } from "./providers/codex.js";
+import { deepseekProvider } from "./providers/deepseek.js";
 import { duckDuckGoHtmlProvider } from "./providers/duckduckgo-html.js";
 import { exaProvider } from "./providers/exa.js";
 import { googleCseProvider } from "./providers/google-cse.js";
@@ -18,20 +20,25 @@ import type {
 	BuiltSearchRequest,
 	SearchProvider,
 	SearchProviderConfig,
+	SearchProviderEntry,
 	SearchRequest,
 	SearchResultItem,
 } from "./types.js";
+
+export { mergeHeaders } from "./providers/shared.js";
 
 const PROVIDER_MODULES: Record<SearchProvider, ProviderModule> = {
 	exa: exaProvider,
 	tavily: tavilyProvider,
 	serpdive: serpdiveProvider,
 	brave: braveProvider,
+	deepseek: deepseekProvider,
 	"duckduckgo-html": duckDuckGoHtmlProvider,
 	serper: serperProvider,
 	"google-cse": googleCseProvider,
 	"z-ai": zAiProvider,
 	openai: openAiResponsesProvider,
+	"openai-codex": codexSubscriptionProvider,
 	codex: openAiResponsesProvider,
 	anthropic: anthropicProvider,
 	perplexity: perplexityProvider,
@@ -54,4 +61,15 @@ export function buildSearchRequest(config: SearchProviderConfig, request: Search
 
 export function normalizeSearchResponse(provider: SearchProvider, payload: unknown): SearchResultItem[] {
 	return PROVIDER_MODULES[provider].normalizeResponse(parseObjectPayload(payload));
+}
+
+const ANSWER_PROVIDERS = new Set<SearchProvider>(["openai", "openai-codex", "codex", "anthropic", "xai"]);
+
+/**
+ * Direct engines can serve a raw query without a model-generated answer. Z.ai and
+ * Perplexity are direct only when no search model is configured.
+ */
+export function isDirectSearchProvider(entry: Pick<SearchProviderEntry, "provider" | "model">): boolean {
+	if (entry.provider === "z-ai" || entry.provider === "perplexity") return entry.model === undefined;
+	return !ANSWER_PROVIDERS.has(entry.provider);
 }

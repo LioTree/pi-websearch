@@ -1,7 +1,7 @@
 import { providerUrl } from "../provider-endpoints.js";
 import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.js";
 import type { BuildContext, ProviderModule } from "./shared.js";
-import { appendDomainFilters, clamp, collect, getArray, getObject, getString, result } from "./shared.js";
+import { appendDomainFilters, clamp, collect, getArray, getObject, getString, keyedHeaders, result } from "./shared.js";
 
 export const braveProvider: ProviderModule = {
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
@@ -10,7 +10,7 @@ export const braveProvider: ProviderModule = {
 		url.searchParams.set("count", String(clamp(maxResults, 1, 20)));
 		return {
 			url: url.toString(),
-			init: { method: "GET", headers: { Accept: "application/json", "X-Subscription-Token": config.apiKey ?? "" } },
+			init: { method: "GET", headers: keyedHeaders(config, "X-Subscription-Token", { Accept: "application/json" }) },
 		};
 	},
 	normalizeResponse(data: JsonObject): SearchResultItem[] {

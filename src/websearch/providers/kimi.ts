@@ -3,9 +3,9 @@ import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.
 import type { BuildContext, ProviderModule } from "./shared.js";
 import {
 	appendDomainFilters,
+	bearerHeaders,
 	clamp,
 	collect,
-	contentHeaders,
 	getArray,
 	getObject,
 	getString,
@@ -16,7 +16,7 @@ export const kimiProvider: ProviderModule = {
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		return {
 			url: providerUrl(config),
-			init: { method: "POST", headers: contentHeaders({ Authorization: `Bearer ${config.apiKey ?? ""}` }) },
+			init: { method: "POST", headers: bearerHeaders(config) },
 			body: {
 				text_query: appendDomainFilters(request.query, allowedDomains, blockedDomains),
 				limit: clamp(maxResults, 1, 20),

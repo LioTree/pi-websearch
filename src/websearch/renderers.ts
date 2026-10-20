@@ -1,7 +1,13 @@
 import { Text } from "@earendil-works/pi-tui";
 
 import { providerEntryLabel } from "./search.js";
-import type { SearchDetails, SearchErrorDetails, SearchProgressDetails, SearchRenderDetails } from "./types.js";
+import type {
+	NativeRouteStatus,
+	SearchDetails,
+	SearchErrorDetails,
+	SearchProgressDetails,
+	SearchRenderDetails,
+} from "./types.js";
 
 interface ThemeLike {
 	bold(value: string): string;
@@ -32,12 +38,23 @@ function durationText(durationMs: number): string {
 	return durationMs >= 1000 ? `${Math.round(durationMs / 1000)}s` : `${durationMs}ms`;
 }
 
+function attemptStatus(attempt: { error?: string; failureKind?: string; resultsCount: number }): string {
+	if (attempt.error) return `failed${attempt.failureKind ? `(${attempt.failureKind})` : ""}`;
+	return `${attempt.resultsCount}`;
+}
+
 function attemptLabel(details: SearchDetails): string {
 	return details.attempts
-		? details.attempts
-				.map((attempt) => `${providerEntryLabel(attempt)}:${attempt.error ? "failed" : attempt.resultsCount}`)
-				.join(" -> ")
+		? details.attempts.map((attempt) => `${providerEntryLabel(attempt)}:${attemptStatus(attempt)}`).join(" -> ")
 		: "";
+}
+
+function nativeStatusLabel(native: NativeRouteStatus): string {
+	const provider = native.provider ?? native.adapter ?? "route";
+	const adapter = native.adapter && native.adapter !== native.provider ? `/${native.adapter}` : "";
+	const model = native.model ? ` ${native.model}` : "";
+	const reason = native.reason ? `: ${native.reason}` : "";
+	return `native ${provider}${adapter}${model} ${native.status}${reason}`;
 }
 
 function routeStateLabel(details: SearchProgressDetails): string {
@@ -47,7 +64,7 @@ function routeStateLabel(details: SearchProgressDetails): string {
 	return labels
 		.map((label, index) => {
 			const attempt = attempts[index];
-			if (attempt) return `${label}:${attempt.error ? "failed" : attempt.resultsCount}`;
+			if (attempt) return `${label}:${attemptStatus(attempt)}`;
 			return `${label}:${index === attempts.length ? "searching" : "pending"}`;
 		})
 		.join(" -> ");
@@ -77,21 +94,27 @@ export function renderSearchResult(
 	if (options.isPartial) {
 		const details = result.details;
 		if (isSearchProgressDetails(details)) {
+			const nativeLine =
+				details.native && details.native.status === "skipped"
+					? theme.fg("muted", nativeStatusLabel(details.native))
+					: undefined;
 			if (details.currentProvider) {
 				const line = theme.fg(
 					"warning",
 					`Searching "${shorten(details.query, 80)}" via ${details.currentProvider} (max ${details.maxResults})`,
 				);
 				const route = routeStateLabel(details);
-				const rows = options.expanded && route ? [line, theme.fg("muted", `route ${route}`)] : [line];
+				const rows = [line];
+				if (options.expanded && route) rows.push(theme.fg("muted", `route ${route}`));
+				if (options.expanded && nativeLine) rows.push(nativeLine);
 				return new Text(rows.join("\n"), 0, 0);
 			}
 			const route = details.providerLabels.length > 0 ? details.providerLabels.join(" -> ") : "configured providers";
-			return new Text(
+			const rows = [
 				theme.fg("warning", `Searching "${shorten(details.query, 80)}" via ${route} (max ${details.maxResults})`),
-				0,
-				0,
-			);
+			];
+			if (options.expanded && nativeLine) rows.push(nativeLine);
+			return new Text(rows.join("\n"), 0, 0);
 		}
 		return new Text(theme.fg("warning", result.content[0]?.text ?? "Searching the web..."), 0, 0);
 	}
@@ -100,22 +123,36 @@ export function renderSearchResult(
 	if (!details) return new Text(theme.fg("muted", result.content[0]?.text ?? ""), 0, 0);
 	if (isSearchProgressDetails(details)) return new Text(theme.fg("muted", result.content[0]?.text ?? ""), 0, 0);
 	if (isSearchErrorDetails(details)) return new Text(theme.fg("error", details.error), 0, 0);
-	if (details.error) return new Text(theme.fg("error", details.error), 0, 0);
+
+	const nativeLine = details.native ? nativeStatusLabel(details.native) : "";
+	if (details.error) {
+		const rows = [theme.fg("error", details.error)];
+		const attempts = attemptLabel(details);
+		if (attempts) rows.push(theme.fg("muted", `route ${attempts}`));
+		if (nativeLine) rows.push(theme.fg("muted", nativeLine));
+		return new Text(rows.join("\n"), 0, 0);
+	}
 
 	const count = details.results.length;
 	const provider = providerEntryLabel(details);
+	const stage = details.stage === "native" ? "native" : details.strategy;
 	const summary =
 		theme.fg("success", `${count} result${count === 1 ? "" : "s"}`) +
-		theme.fg(
-			"muted",
-			` via ${provider}${details.strategy ? ` (${details.strategy})` : ""} in ${durationText(details.durationMs)}`,
-		) +
+		theme.fg("muted", ` via ${provider}${stage ? ` (${stage})` : ""} in ${durationText(details.durationMs)}`) +
 		(details.truncated ? theme.fg("warning", " (truncated)") : "");
 
-	if (count === 0) return new Text(summary, 0, 0);
+	if (count === 0) {
+		const rows = [summary];
+		if (details.native) rows.push(theme.fg("muted", nativeLine));
+		return new Text(rows.join("\n"), 0, 0);
+	}
 
 	const attempts = attemptLabel(details);
-	const rows = options.expanded && attempts ? [summary, theme.fg("muted", `route ${attempts}`)] : [summary];
+	const rows = [summary];
+	if (nativeLine && (options.expanded || details.native?.status === "skipped")) {
+		rows.push(theme.fg("muted", nativeLine));
+	}
+	if (options.expanded && attempts) rows.push(theme.fg("muted", `route ${attempts}`));
 	const visibleLimit = options.expanded ? 8 : 3;
 	for (const item of details.results.slice(0, visibleLimit)) {
 		rows.push(`${theme.fg("accent", shorten(item.title, 80))} ${theme.fg("dim", shorten(item.url, 100))}`);

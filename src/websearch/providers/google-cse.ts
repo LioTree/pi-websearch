@@ -1,7 +1,7 @@
 import { providerUrl } from "../provider-endpoints.js";
 import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.js";
 import type { BuildContext, ProviderModule } from "./shared.js";
-import { appendDomainFilters, clamp, collect, getArray, getObject, getString, result } from "./shared.js";
+import { appendDomainFilters, clamp, collect, getArray, getObject, getString, mergeHeaders, result } from "./shared.js";
 
 export const googleCseProvider: ProviderModule = {
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
@@ -10,7 +10,10 @@ export const googleCseProvider: ProviderModule = {
 		url.searchParams.set("key", config.apiKey ?? "");
 		url.searchParams.set("cx", config.searchEngineId ?? "");
 		url.searchParams.set("num", String(clamp(maxResults, 1, 10)));
-		return { url: url.toString(), init: { method: "GET", headers: { Accept: "application/json" } } };
+		return {
+			url: url.toString(),
+			init: { method: "GET", headers: mergeHeaders({ Accept: "application/json" }, config.headers) },
+		};
 	},
 	normalizeResponse(data: JsonObject): SearchResultItem[] {
 		return collect(

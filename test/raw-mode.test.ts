@@ -1,7 +1,14 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const resolveNativeRouteMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../src/websearch/native.js", () => ({
+	resolveNativeRoute: resolveNativeRouteMock,
+}));
+
 import { loadWebsearchConfig } from "../src/websearch/config.js";
 import { createWebSearchTool } from "../src/websearch/tool.js";
 import type { SearchDetails, WebsearchConfig } from "../src/websearch/types.js";
@@ -13,8 +20,14 @@ function config(rawMode?: boolean): WebsearchConfig {
 		auto: true,
 		...(rawMode === undefined ? {} : { rawMode }),
 		providers: [
-			{ provider: "xai", apiKey: "test", priority: -2 },
-			{ provider: "brave", apiKey: "test", maxResults: 3 },
+			{
+				id: "hosted",
+				provider: "xai",
+				apiKey: "test",
+				priority: -2,
+				baseUrl: "https://hosted.example/v1/responses",
+			},
+			{ id: "direct", provider: "brave", apiKey: "test", maxResults: 3, baseUrl: "https://brave.example" },
 		],
 	};
 }
@@ -26,8 +39,22 @@ function toolFor(rawMode?: boolean, overrides: Partial<WebsearchConfig> = {}) {
 function context() {
 	const getApiKeyAndHeaders = vi.fn(async () => ({ ok: true, apiKey: "test" }));
 	return {
-		model: { provider: "xai", id: "grok-4", baseUrl: "https://api.x.ai/v1" },
+		model: { provider: "xai", id: "grok-4", api: "openai-responses", baseUrl: "https://api.x.ai/v1" },
 		modelRegistry: { getApiKeyAndHeaders, getAvailable: () => [] },
+	};
+}
+
+function nativeResolution() {
+	return {
+		entry: {
+			id: "native",
+			provider: "xai",
+			apiKey: "test",
+			baseUrl: "https://hosted.example/v1/responses",
+			model: "grok-4",
+		},
+		status: { status: "ready", provider: "xai", model: "grok-4", adapter: "xai" },
+		key: "xai|https://hosted.example/v1/responses",
 	};
 }
 
@@ -35,7 +62,8 @@ function mockSearch() {
 	return vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: string | URL | Request) => {
-			const payload = String(input).includes("brave")
+			const url = String(input);
+			const payload = url.includes("brave")
 				? {
 						web: {
 							results: [{ title: "Direct result", url: "https://example.com", description: "Engine snippet" }],
@@ -48,6 +76,11 @@ function mockSearch() {
 }
 
 describe("opt-in raw search mode", () => {
+	beforeEach(() => {
+		resolveNativeRouteMock.mockReset();
+		resolveNativeRouteMock.mockResolvedValue(nativeResolution());
+	});
+
 	afterEach(() => vi.unstubAllGlobals());
 
 	it.each([undefined, false])(
@@ -69,7 +102,7 @@ describe("opt-in raw search mode", () => {
 		expect(tool.promptGuidelines?.join(" ")).toContain('mode: "raw"');
 	});
 
-	it("#given raw override #when searching #then skips native discovery and explicit answer providers", async () => {
+	it("#given raw override #when searching #then skips native resolution and explicit hosted providers", async () => {
 		mockSearch();
 		const ctx = context();
 		const result = await toolFor(true).execute(
@@ -79,18 +112,22 @@ describe("opt-in raw search mode", () => {
 			undefined,
 			ctx as never,
 		);
-		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+		expect(resolveNativeRouteMock).not.toHaveBeenCalled();
 		expect(fetch).toHaveBeenCalledTimes(1);
 		const request = vi.mocked(fetch).mock.calls[0];
 		expect(String(request?.[0])).toContain("brave");
 		expect(String(request?.[0])).toContain("example.com");
-		expect((result.details as SearchDetails).results[0]?.snippet).toBe("Engine snippet");
+		const details = result.details as SearchDetails;
+		expect(details.mode).toBe("raw");
+		expect(details.stage).toBe("fallback");
+		expect(details.results[0]?.snippet).toBe("Engine snippet");
 		expect(JSON.stringify(result.content)).not.toContain("retry with");
 	});
 
-	it("#given no mode #when searching #then retains native routing and adds retry hint only when enabled", async () => {
+	it("#given no mode #when searching #then retains native-first routing and adds the retry hint only when enabled", async () => {
 		mockSearch();
 		for (const enabled of [false, true]) {
+			resolveNativeRouteMock.mockClear();
 			const ctx = context();
 			const result = await toolFor(enabled).execute(
 				"default",
@@ -99,8 +136,9 @@ describe("opt-in raw search mode", () => {
 				undefined,
 				ctx as never,
 			);
-			expect(ctx.modelRegistry.getApiKeyAndHeaders).toHaveBeenCalled();
+			expect(resolveNativeRouteMock).toHaveBeenCalled();
 			expect((result.details as SearchDetails).provider).toBe("xai");
+			expect((result.details as SearchDetails).stage).toBe("native");
 			expect(JSON.stringify(result.content).includes("retry with")).toBe(enabled);
 		}
 	});
@@ -116,9 +154,10 @@ describe("opt-in raw search mode", () => {
 		);
 		expect(JSON.stringify(result.content)).toContain("disabled");
 		expect(fetch).not.toHaveBeenCalled();
+		expect(resolveNativeRouteMock).not.toHaveBeenCalled();
 	});
 
-	it("#given only answer providers #when raw requested #then returns actionable error without fetching", async () => {
+	it("#given only hosted providers #when raw requested #then returns actionable error without fetching", async () => {
 		mockSearch();
 		const result = await toolFor(true, { providers: [{ provider: "xai", apiKey: "test" }] }).execute(
 			"none",
@@ -145,6 +184,7 @@ describe("opt-in raw search mode", () => {
 		);
 		expect(fetch).toHaveBeenCalledTimes(1);
 		expect((result.details as SearchDetails).error).toBeDefined();
+		expect((result.details as SearchDetails).native?.reason).toContain("raw mode");
 	});
 
 	it.each(["perplexity", "z-ai"] as const)(
@@ -165,8 +205,8 @@ describe("opt-in raw search mode", () => {
 			);
 			const tool = toolFor(true, {
 				providers: [
-					{ provider, model: "answer-model", apiKey: "test" },
-					{ provider, apiKey: "test" },
+					{ provider, model: "answer-model", apiKey: "test", id: "answer" },
+					{ provider, apiKey: "test", id: "direct" },
 				],
 			});
 			const result = await tool.execute(
@@ -178,6 +218,7 @@ describe("opt-in raw search mode", () => {
 			);
 			expect(fetch).toHaveBeenCalledTimes(1);
 			expect(vi.mocked(fetch).mock.calls[0]?.[1]?.body).not.toContain('"model"');
+			expect((result.details as SearchDetails).entryId).toBe("direct");
 			expect((result.details as SearchDetails).results).toHaveLength(1);
 		},
 	);

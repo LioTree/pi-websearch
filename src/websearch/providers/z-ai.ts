@@ -3,14 +3,27 @@ import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.
 import type { BuildContext, ProviderModule } from "./shared.js";
 import {
 	appendDomainFilters,
+	bearerHeaders,
 	clamp,
 	collect,
-	contentHeaders,
 	getArray,
 	getObject,
 	getString,
 	result,
 } from "./shared.js";
+
+function domainQuery(query: string, allowedDomains?: string[], blockedDomains?: string[]): string {
+	// Z.ai's native filter accepts a single domain. With one allowed domain keep it
+	// native; with several, express the alternatives (and any blocked exclusions) in
+	// the query so no allowed scope is silently dropped.
+	return allowedDomains && allowedDomains.length > 1
+		? appendDomainFilters(query, allowedDomains, blockedDomains)
+		: appendDomainFilters(query, undefined, blockedDomains);
+}
+
+function nativeDomainFilter(allowedDomains?: string[]): string | undefined {
+	return allowedDomains?.length === 1 ? allowedDomains[0] : undefined;
+}
 
 export const zAiProvider: ProviderModule = {
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
@@ -21,14 +34,15 @@ export const zAiProvider: ProviderModule = {
 				search_result: true,
 				count: clamp(maxResults, 1, 50),
 			};
-			if (allowedDomains?.[0]) webSearch["search_domain_filter"] = allowedDomains[0];
+			const domainFilter = nativeDomainFilter(allowedDomains);
+			if (domainFilter) webSearch["search_domain_filter"] = domainFilter;
 			if (config.searchContextSize) webSearch["content_size"] = config.searchContextSize;
 			return {
 				url: providerUrl(config),
-				init: { method: "POST", headers: contentHeaders({ Authorization: `Bearer ${config.apiKey ?? ""}` }) },
+				init: { method: "POST", headers: bearerHeaders(config) },
 				body: {
 					model: config.model,
-					messages: [{ role: "user", content: request.query }],
+					messages: [{ role: "user", content: domainQuery(request.query, allowedDomains, blockedDomains) }],
 					tools: [{ type: "web_search", web_search: webSearch }],
 				},
 			};
@@ -36,13 +50,14 @@ export const zAiProvider: ProviderModule = {
 
 		const body: JsonObject = {
 			search_engine: "search-prime",
-			search_query: appendDomainFilters(request.query, undefined, blockedDomains),
+			search_query: domainQuery(request.query, allowedDomains, blockedDomains),
 			count: clamp(maxResults, 1, 50),
 		};
-		if (allowedDomains?.[0]) body["search_domain_filter"] = allowedDomains[0];
+		const domainFilter = nativeDomainFilter(allowedDomains);
+		if (domainFilter) body["search_domain_filter"] = domainFilter;
 		return {
 			url: providerUrl(config),
-			init: { method: "POST", headers: contentHeaders({ Authorization: `Bearer ${config.apiKey ?? ""}` }) },
+			init: { method: "POST", headers: bearerHeaders(config) },
 			body,
 		};
 	},

@@ -1,7 +1,7 @@
 import { providerUrl } from "../provider-endpoints.js";
 import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.js";
 import type { BuildContext, ProviderModule } from "./shared.js";
-import { appendDomainFilters, collect, getString, result } from "./shared.js";
+import { appendDomainFilters, collect, getString, mergeHeaders, result } from "./shared.js";
 
 function htmlDecode(value: string): string {
 	return value
@@ -52,7 +52,10 @@ export const duckDuckGoHtmlProvider: ProviderModule = {
 	buildRequest({ config, request, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		const url = new URL(providerUrl(config));
 		url.searchParams.set("q", appendDomainFilters(request.query, allowedDomains, blockedDomains));
-		return { url: url.toString(), init: { method: "GET", headers: { Accept: "text/html" } } };
+		return {
+			url: url.toString(),
+			init: { method: "GET", headers: mergeHeaders({ Accept: "text/html" }, config.headers) },
+		};
 	},
 	normalizeResponse(data: JsonObject): SearchResultItem[] {
 		return normalizeDuckDuckGoHtml(getString(data["html"]) ?? "");
