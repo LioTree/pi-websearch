@@ -1,8 +1,20 @@
 # pi-websearch
 
+Maintained fork of [code-yeongyu/pi-websearch](https://github.com/code-yeongyu/pi-websearch). Releases and development continue at [LioTree/pi-websearch](https://github.com/LioTree/pi-websearch).
+
 Provider-backed `web_search` tool for pi. The extension exposes one tool for every model. Normal calls prefer the active model provider's server-hosted search when pi can supply credentials for a recognized provider and protocol; otherwise they use the explicitly configured provider chain. An optional raw mode returns direct search-engine results without a model-generated answer.
 
 Configuration is explicit. There is no built-in free default provider: if no config file exists, the extension refuses to activate and reports a startup error.
+
+## Installation
+
+Install the tagged release:
+
+```bash
+pi install git:github.com/LioTree/pi-websearch@v0.5.0
+```
+
+To track ongoing development, use `git:github.com/LioTree/pi-websearch@main` instead. Run `/reload` in an existing session after installing or updating. A valid search configuration is required; see below.
 
 ## Tool Schema
 

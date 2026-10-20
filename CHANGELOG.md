@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-10-20
 
 ### Added
 
+- Opt-in raw search (`rawMode: true`, `mode: "raw"`) skips native search and model-answer backends while retaining the configured direct-search chain.
 - Codex/ChatGPT subscription native search for active `openai-codex` models and `adapter: "codex"` overrides. A separate `openai-codex` search backend uses pi-resolved credentials, account identity, Codex request fields, and bounded SSE parsing. OpenAI auth resolved to ChatGPT uses the same transport. Legacy configured `codex` API-key entries are unchanged. Failed/incomplete/truncated streams fall back; cancellation closes the reader without starting another provider.
 - DeepSeek Search API (`POST /v1/tools/search`) as a native adapter for the active `deepseek` provider and as an explicit direct-search backend. Native search inherits pi credentials; renamed gateways opt in with `adapter: "deepseek"`. Raw mode accepts configured DeepSeek entries. Queries including domain operators are limited to 128 Unicode characters without truncation; full page content is not requested.
 
@@ -11,7 +12,7 @@
 
 - Configuration is explicit: a missing config file is `missing_config` instead of a hidden DuckDuckGo default. Config parsing rejects invalid providers, entries, unknown keys, booleans, strategies, result limits, timeouts, headers, whitespace-only values, and native overrides with the config path in the error.
 - Credential headers are matched per provider. `User-Agent`, `X-Trace-Id`, and other non-auth headers no longer satisfy missing credentials; `cf-aig-authorization` remains gateway-only. Google CSE requires `apiKey` because the key is sent in the query string.
-- One `web_search` tool is registered for every model. Normal calls try the active model's hosted search first and then the configured provider chain; a native failure no longer disables generic search. `auto: false` disables native routing.
+- One `web_search` tool is registered for every model. Normal calls try the active provider's native search first and then the configured provider chain; a native failure no longer disables generic search. `auto: false` disables native routing.
 - Removed `provider_native_bypass`, cross-provider native discovery, and OpenRouter model-id unwrapping. Only the active model is considered, and `fallback: false` now controls retries inside the configured provider chain only; a native failure still falls through to that chain.
 - Each call has a fixed 180-second wall-clock budget covering native credential resolution and all attempts. The effective result count is capped at 50; configured `maxResults` values above 50 are clamped at execution.
 - Native capability is keyed by provider identity plus required model API, not model-id prefixes, and only the active model is considered. Credentials, headers, and resolved base URLs come from pi for that model.
@@ -21,7 +22,7 @@
 - `/websearch status` reports the active model, mode flags, native adapter candidate or skip reason, and provider chain without resolving credentials.
 - Structured source parsing and typed failure diagnostics replace prose-URL harvesting; native and fallback attempts are retained in details.
 - Model-backed Perplexity and Z.ai entries select chat endpoints by default. Anthropic OAuth search includes the CLI identity required by pi's adapter, including header-only tokens; page age is retained as metadata rather than replacing source snippets. Responses citations are collected across output blocks and merged with other structured search sources.
-- Model-backed Perplexity and Z.ai entries default to chat endpoints, not direct-search endpoints. xAI falls back when domain filters exceed the API limit rather than silently dropping domains.
+- xAI falls back when domain filters exceed the API limit rather than silently dropping domains.
 - Credentials echoed by upstream services are redacted without rewriting unrelated result URLs or snippets, including credentials supplied in endpoint query parameters.
 - The native unsupported cache is limited to five minutes and isolated by account credentials. Only explicit unsupported tool or search failures are cached, not invalid arguments, authentication, or quota failures.
 
