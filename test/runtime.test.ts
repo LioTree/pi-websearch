@@ -35,11 +35,19 @@ function codexResponse(errorCode?: string): Response {
 	return new Response(`data: ${JSON.stringify(data)}\n\n`, { headers: { "Content-Type": "text/event-stream" } });
 }
 
+interface ExtraProvider {
+	api: "anthropic-messages" | "openai-completions";
+	baseUrl: string;
+	apiKey: string;
+}
+
 async function isolatedSession(
 	rawMode: boolean,
 	fallback = true,
 	provider = "test-gateway",
 	configuredProvider: "exa" | "deepseek" = "exa",
+	extraProviders: Record<string, ExtraProvider> = {},
+	extraOverrides: Record<string, { adapter: "anthropic" | "openai" }> = {},
 ) {
 	const cwd = await mkdtemp(join(tmpdir(), "pi-websearch-runtime-"));
 	directories.push(cwd);
@@ -49,7 +57,7 @@ async function isolatedSession(
 		JSON.stringify({
 			rawMode,
 			fallback,
-			nativeOverrides: { "test-gateway": { adapter: "openai" } },
+			nativeOverrides: { "test-gateway": { adapter: "openai" }, ...extraOverrides },
 			providers: [
 				{
 					provider: configuredProvider,
@@ -88,6 +96,22 @@ async function isolatedSession(
 	});
 	const model = modelRuntime.getModel(provider, "first-alias");
 	if (!model) throw new Error("Test model was not registered");
+	for (const [providerId, extra] of Object.entries(extraProviders)) {
+		modelRuntime.registerProvider(providerId, {
+			api: extra.api,
+			baseUrl: extra.baseUrl,
+			apiKey: extra.apiKey,
+			models: ["first-alias", "second-alias"].map((id) => ({
+				id,
+				name: id,
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 8192,
+				maxTokens: 1024,
+			})),
+		});
+	}
 	const settingsManager = SettingsManager.inMemory();
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
@@ -336,5 +360,106 @@ describe("real pi SDK extension lifecycle", () => {
 			expect.objectContaining({ model: "first-alias" }),
 			expect.objectContaining({ model: "second-alias" }),
 		]);
+	});
+
+	it("#given a native model #when pi switches to providers without or with a different adapter and back #then each search uses its own route and credentials", async () => {
+		// given
+		const calls: { url: string; init?: RequestInit }[] = [];
+		vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+			const url = String(input);
+			calls.push({ url, ...(init === undefined ? {} : { init }) });
+			if (url.includes("native.example")) return successPayload(true);
+			if (url.includes("anthropic.example"))
+				return new Response(
+					JSON.stringify({
+						content: [
+							{
+								type: "web_search_tool_result",
+								content: [{ title: "Anthropic docs", url: "https://docs.anthropic.com/" }],
+							},
+						],
+					}),
+				);
+			return successPayload(false);
+		});
+		const { session, modelRuntime } = await isolatedSession(
+			false,
+			false,
+			"test-gateway",
+			"exa",
+			{
+				"plain-gateway": {
+					api: "openai-completions",
+					baseUrl: "https://plain.example/v1",
+					apiKey: "plain-credential",
+				},
+				"anthropic-gateway": {
+					api: "anthropic-messages",
+					baseUrl: "https://anthropic.example/v1",
+					apiKey: "anthropic-credential",
+				},
+			},
+			{ "anthropic-gateway": { adapter: "anthropic" } },
+		);
+		const modelFor = (providerId: string) => {
+			const model = modelRuntime.getModel(providerId, "first-alias");
+			if (!model) throw new Error(`${providerId} model was not registered`);
+			return model;
+		};
+
+		// when
+		const first = await toolFor(session).execute("native-first", { query: "runtime search" });
+		await session.setModel(modelFor("plain-gateway"));
+		const plain = await toolFor(session).execute("plain-second", { query: "runtime search" });
+		await session.setModel(modelFor("anthropic-gateway"));
+		const anthropic = await toolFor(session).execute("anthropic-third", { query: "runtime search" });
+		await session.setModel(modelFor("test-gateway"));
+		const back = await toolFor(session).execute("native-fourth", { query: "runtime search" });
+
+		// then
+		expect(calls.map((call) => call.url)).toEqual([
+			"https://native.example/v1/responses",
+			"https://fallback.example/search",
+			"https://anthropic.example/v1/messages",
+			"https://native.example/v1/responses",
+		]);
+		expect(first.details).toMatchObject({ stage: "native", provider: "openai" });
+		expect(plain.details).toMatchObject({ stage: "fallback", provider: "exa" });
+		expect(JSON.stringify(plain.details)).toContain("unsupported provider");
+		expect(anthropic.details).toMatchObject({ stage: "native", provider: "anthropic" });
+		expect(calls[2]?.init?.headers).toMatchObject({ "x-api-key": "anthropic-credential" });
+		expect(JSON.stringify(calls[2]?.init?.headers)).not.toContain("native-test-credential");
+		expect(back.details).toMatchObject({ stage: "native", provider: "openai" });
+		expect(calls[3]?.init?.headers).toMatchObject({ Authorization: "Bearer native-test-credential" });
+		expect(JSON.parse(String(calls[3]?.init?.body))).toMatchObject({ model: "first-alias" });
+	});
+
+	it("#given a model whose native search is cached as unsupported #when pi switches models on the same provider #then the next model still attempts native search", async () => {
+		// given
+		const urls: string[] = [];
+		vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+			const url = String(input);
+			urls.push(url);
+			if (!url.includes("native.example")) return successPayload(false);
+			return new Response(JSON.stringify({ error: { message: "web_search tool is not supported" } }), {
+				status: 400,
+			});
+		});
+		const { session, modelRuntime } = await isolatedSession(false);
+		const first = await toolFor(session).execute("unsupported-first", { query: "runtime search" });
+		const nextModel = modelRuntime.getModel("test-gateway", "second-alias");
+		if (!nextModel) throw new Error("Second model was not registered");
+		await session.setModel(nextModel);
+		// when
+		const second = await toolFor(session).execute("second-model", { query: "runtime search" });
+		// then
+		expect(JSON.stringify(first.details)).toContain('"failureKind":"unsupported"');
+		expect(urls).toEqual([
+			"https://native.example/v1/responses",
+			"https://fallback.example/search",
+			"https://native.example/v1/responses",
+			"https://fallback.example/search",
+		]);
+		expect(second.details).toMatchObject({ stage: "fallback" });
 	});
 });
