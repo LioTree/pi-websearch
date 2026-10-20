@@ -184,7 +184,9 @@ Explicit raw calls still skip subscription auth and exclude both Codex backends.
 
 ### DeepSeek Search
 
-The [official Search API](https://api-docs.deepseek.com/guides/search/) returns structured sources from DeepSeek's search engine. With `auto: true` and an active `deepseek` model, native search reuses that model's pi-resolved credentials and base URL. It does not send a `model` field, so the chat protocol and model alias do not limit search eligibility. Unknown gateway provider names require `nativeOverrides[provider] = { "adapter": "deepseek" }`; set `endpoint` when the gateway uses a different search path.
+The [official Search API](https://api-docs.deepseek.com/guides/search/) returns structured sources from DeepSeek's search engine. With `auto: true` and an active `deepseek` model, native search reuses that model's pi-resolved credentials and base URL. It does not send a `model` field, so the chat protocol and model alias do not limit search eligibility.
+
+This is the dedicated Search API, not the Responses API's hosted `web_search` tool. DeepSeek documents hosted `web_search` as supported only with `deepseek-v4-pro`; the Search API has no such model restriction, so a `deepseek-flash` session still searches through `/v1/tools/search`. The Search API is billed separately from chat and has its own QPS limit (HTTP 429, treated as quota and not cached as unsupported). Unknown gateway provider names require `nativeOverrides[provider] = { "adapter": "deepseek" }`; set `endpoint` when the gateway uses a different search path.
 
 The endpoint is `/v1/tools/search`; native URL derivation handles root, `/v1`, `/beta`, and `/anthropic` bases while retaining a gateway path prefix. As with other configured backends, a provider entry's `baseUrl` or a native override's `endpoint` must be the complete search URL.
 
