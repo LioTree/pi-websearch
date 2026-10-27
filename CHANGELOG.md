@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1 - 2026-10-27
+
+### Fixed
+
+- OpenAI ChatGPT OAuth search at the existing Responses endpoint now sends structured message input, `store: false`, and `stream: true`, and decodes bounded SSE responses. The endpoint and effective credentials are preserved; requests are not redirected to the legacy Codex backend.
+- Subscription detection uses the effective bearer token's ChatGPT account claim or an explicit account header. API-key requests retain their existing transport.
+- Added regression coverage for native routing, streamed sources, credential overrides, account headers, and truncated streams. Validation: 425 tests and strict type/style checks passed; no live account verification performed for this release.
+
 ## 0.5.0 - 2026-10-20
 
 ### Added
