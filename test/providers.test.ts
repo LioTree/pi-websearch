@@ -226,7 +226,19 @@ describe("buildSearchRequest", () => {
 		expect(request.init.headers).toHaveProperty("Authorization", "Bearer openai-test");
 		expect(request.body).toEqual({
 			model: "gpt-5.5",
-			input: "Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: latest OpenAI web search docs",
+			input: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "input_text",
+							text: "Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: latest OpenAI web search docs",
+						},
+					],
+				},
+			],
+			store: false,
+			stream: true,
 			tools: [{ type: "web_search", external_web_access: false, search_context_size: "high" }],
 			include: ["web_search_call.action.sources"],
 			tool_choice: "required",
@@ -833,7 +845,7 @@ describe("provider auth headers", () => {
 		expect(request.init.headers).toHaveProperty("authorization", "Bearer gateway-token");
 		expect(request.init.headers).not.toHaveProperty("Authorization");
 		expect(request.init.headers).not.toHaveProperty("Content-Type");
-		expect(request.init.headers).toHaveProperty("Accept", "application/json");
+		expect(request.init.headers).toHaveProperty("Accept", "text/event-stream");
 	});
 
 	it("#given a null Authorization tombstone and an API key #when building a request #then does not recreate the deleted header", () => {
@@ -1133,10 +1145,17 @@ describe("domain policy request construction", () => {
 		expect(request.body).toMatchObject({
 			tools: [{ type: "web_search", filters: { allowed_domains: ["example.com"] } }],
 		});
-		expect(request.body).toHaveProperty(
-			"input",
-			"Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: current docs -site:ads.example.com",
-		);
+		expect(request.body).toHaveProperty("input", [
+			{
+				role: "user",
+				content: [
+					{
+						type: "input_text",
+						text: "Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: current docs -site:ads.example.com",
+					},
+				],
+			},
+		]);
 	});
 
 	it("#given both filters for Anthropic #when building request #then sends allowed natively and blocked in the query", () => {

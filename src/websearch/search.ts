@@ -578,7 +578,12 @@ export async function performProviderSearch(
 	let bodyText = "";
 	let streamedPayload: JsonObject | undefined;
 	try {
-		if (response.ok && built.responseFormat === "codex-sse") {
+		if (
+			response.ok &&
+			(built.responseFormat === "codex-sse" ||
+				(built.responseFormat === "responses-sse" &&
+					response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json"))
+		) {
 			streamedPayload = await readCodexResponse(response, abort.signal);
 		} else {
 			bodyText = await response.text();

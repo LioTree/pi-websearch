@@ -113,8 +113,8 @@ export interface SearchRequest {
 
 export interface BuiltSearchRequest {
 	url: string;
-	/** Codex subscription endpoints require an incrementally decoded SSE response. */
-	responseFormat?: "codex-sse";
+	/** Responses streams are decoded incrementally; Codex subscriptions require SSE. */
+	responseFormat?: "codex-sse" | "responses-sse";
 	init: {
 		method: "GET" | "POST";
 		headers: Record<string, string>;

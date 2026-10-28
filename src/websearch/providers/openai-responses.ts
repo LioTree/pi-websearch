@@ -6,29 +6,11 @@ import {
 	bearerHeaders,
 	collect,
 	getArray,
-	getHeader,
 	getObject,
 	getString,
-	isJsonObject,
 	mergeHeaders,
 	result,
 } from "./shared.js";
-
-function isChatGptCredential(headers: Record<string, string>): boolean {
-	if (getHeader(headers, "chatgpt-account-id")?.trim()) return true;
-	const token = getHeader(headers, "Authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1];
-	const payload = token?.split(".");
-	if (payload?.length !== 3 || !payload[1]) return false;
-	try {
-		const decoded: unknown = JSON.parse(Buffer.from(payload[1], "base64url").toString("utf8"));
-		return (
-			isJsonObject(decoded) &&
-			Boolean(getString(getObject(decoded["https://api.openai.com/auth"])?.["chatgpt_account_id"])?.trim())
-		);
-	} catch {
-		return false;
-	}
-}
 
 function searchOnlyPrompt(query: string): string {
 	return `Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: ${query}`;
@@ -52,20 +34,20 @@ export function buildResponsesRequest({
 	);
 
 	const headers = bearerHeaders(config);
-	// Detect the effective credential, not a superseded apiKey. Subscription auth
-	// on the public Responses endpoint must not be redirected to the Codex backend.
-	const subscription = config.provider === "openai" && isChatGptCredential(headers);
+	// This wire format works with both API keys and OAuth. Credentials can be
+	// opaque or overridden, so never infer transport from optional JWT claims.
+	const streaming = config.provider === "openai";
 	return {
 		url: providerUrl(config),
-		...(subscription ? { responseFormat: "codex-sse" as const } : {}),
+		...(streaming ? { responseFormat: "responses-sse" as const } : {}),
 		init: {
 			method: "POST",
-			headers: subscription ? mergeHeaders(headers, { Accept: "text/event-stream" }) : headers,
+			headers: streaming ? mergeHeaders(headers, { Accept: "text/event-stream" }) : headers,
 		},
 		body: {
 			model: config.model ?? "gpt-5.5",
-			input: subscription ? [{ role: "user", content: [{ type: "input_text", text: input }] }] : input,
-			...(subscription ? { store: false, stream: true } : {}),
+			input: streaming ? [{ role: "user", content: [{ type: "input_text", text: input }] }] : input,
+			...(streaming ? { store: false, stream: true } : {}),
 			tools: [webSearchTool],
 			include: ["web_search_call.action.sources"],
 			tool_choice: "required",
@@ -81,6 +63,7 @@ export function normalizeResponsesPayload(
 	data: JsonObject,
 	options: { citationsFallback: boolean },
 ): SearchResultItem[] {
+	if (data["error"] || (data["status"] !== undefined && data["status"] !== "completed")) return [];
 	const output = getArray(data["output"]);
 	const sources = collect(
 		output.flatMap((raw) => {

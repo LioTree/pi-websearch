@@ -184,6 +184,10 @@ Raw results contain titles, URLs, and snippets without an additional model-gener
 
 Credentials may be supplied with `apiKey`, `headers`, or both. Authenticated requests refuse redirects rather than forwarding credentials to another origin.
 
+### OpenAI Responses with API keys or ChatGPT OAuth
+
+The `openai` adapter keeps the active model's resolved endpoint and effective authorization. Both API-key and OAuth calls use message-array input, `store: false`, and `stream: true`; no account header or JWT claim is required to select this format. OpenAI OAuth at `https://api.openai.com/v1/responses` is not redirected to the legacy Codex backend. The bounded Responses SSE decoder requires a successful terminal event. Gateways explicitly returning `application/json` remain supported; explicit failed or incomplete statuses do not yield partial sources.
+
 ### Codex / ChatGPT subscription search
 
 Sign in through pi and select an `openai-codex` model. With `auto: true` and a valid websearch configuration, normal calls reuse the active model's pi-resolved credentials and URL, with no separate OpenAI API key or model-name whitelist. Pi resolves/refreshes credentials on each search. If pi resolves an `openai` Responses session to the ChatGPT backend, the native request also uses this subscription transport. This does not discover or borrow other logged-in accounts.

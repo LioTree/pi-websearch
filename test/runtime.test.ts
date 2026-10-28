@@ -152,6 +152,11 @@ function toolFor(session: AgentSession) {
 }
 
 function successPayload(native: boolean): Response {
+	if (native)
+		return new Response(
+			`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output: [{ type: "web_search_call", action: { sources: [{ url: "https://docs.example/" }] } }] } })}\n\n`,
+			{ headers: { "Content-Type": "text/event-stream" } },
+		);
 	return new Response(
 		JSON.stringify(
 			native
