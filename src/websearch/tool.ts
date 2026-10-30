@@ -40,23 +40,23 @@ const Params = Type.Object(
 	{ additionalProperties: false },
 );
 
+const RAW_RETRY_GUIDELINE =
+	'Omit mode by default (uses native search with automatic fallback). Set mode: "raw" (direct-search backends only) strictly to: (1) retry the same query once if a default search refuses or yields no usable sources, or (2) fulfill an explicit user request for raw search-engine results without model synthesis. Standard requests for URLs, citations, or official docs do not justify raw.';
+
 const RawParams = Type.Object(
 	{
 		...Params.properties,
 		mode: Type.Optional(
 			Type.Literal("raw", {
-				description:
-					"Omit for normal native-first routing. Use raw for direct search-engine results without an additional model-generated answer, including when a previous search returned a refusal or no usable sources.",
+				description: RAW_RETRY_GUIDELINE,
 			}),
 		),
 	},
 	{ additionalProperties: false },
 );
 
-const RAW_RETRY_GUIDELINE =
-	'If search returns a refusal or no usable sources, or the user requests direct search-engine results, retry with the same query and mode: "raw". Do not repeat a raw retry for the same query.';
 const RAW_RETRY_HINT =
-	'If these results are a refusal or have no usable sources, retry with the same query and mode: "raw" to use direct search-engine results without an additional model-generated answer.';
+	'Use these results unless they are a refusal or contain no usable sources; only then retry the same query once with mode: "raw".';
 const NATIVE_UNSUPPORTED_TTL_MS = 5 * 60_000;
 
 export type ConfigProvider = () => ConfigLoadResult;

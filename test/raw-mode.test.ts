@@ -10,6 +10,7 @@ vi.mock("../src/websearch/native.js", () => ({
 }));
 
 import { loadWebsearchConfig } from "../src/websearch/config.js";
+import { formatSearchText } from "../src/websearch/search.js";
 import { createWebSearchTool } from "../src/websearch/tool.js";
 import type { SearchDetails, WebsearchConfig } from "../src/websearch/types.js";
 
@@ -99,7 +100,10 @@ describe("opt-in raw search mode", () => {
 		expect(tool.parameters.properties).toHaveProperty("mode");
 		expect(tool.parameters.required).toEqual(["query"]);
 		expect(tool.parameters.additionalProperties).toBe(false);
-		expect(tool.promptGuidelines?.join(" ")).toContain('mode: "raw"');
+		const guideline = tool.promptGuidelines?.[1];
+		if (!("mode" in tool.parameters.properties)) throw new Error("Expected raw mode parameter");
+		expect(tool.parameters.properties.mode.description).toBe(guideline);
+		expect(guideline).toBeTruthy();
 	});
 
 	it("#given raw override #when searching #then skips native resolution and explicit hosted providers", async () => {
@@ -121,7 +125,7 @@ describe("opt-in raw search mode", () => {
 		expect(details.mode).toBe("raw");
 		expect(details.stage).toBe("fallback");
 		expect(details.results[0]?.snippet).toBe("Engine snippet");
-		expect(JSON.stringify(result.content)).not.toContain("retry with");
+		expect(result.content).toEqual([{ type: "text", text: formatSearchText(details) }]);
 	});
 
 	it("#given no mode #when searching #then retains native-first routing and adds the retry hint only when enabled", async () => {
@@ -139,7 +143,10 @@ describe("opt-in raw search mode", () => {
 			expect(resolveNativeRouteMock).toHaveBeenCalled();
 			expect((result.details as SearchDetails).provider).toBe("xai");
 			expect((result.details as SearchDetails).stage).toBe("native");
-			expect(JSON.stringify(result.content).includes("retry with")).toBe(enabled);
+			const text = result.content.find((item) => item.type === "text")?.text ?? "";
+			const resultsText = formatSearchText(result.details as SearchDetails);
+			expect(text.startsWith(resultsText)).toBe(true);
+			expect(text.length > resultsText.length).toBe(enabled);
 		}
 	});
 

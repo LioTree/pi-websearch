@@ -11,7 +11,7 @@ Configuration is explicit. There is no built-in free default provider: if no con
 Install the tagged release:
 
 ```bash
-pi install git:github.com/LioTree/pi-websearch@v0.5.0
+pi install git:github.com/LioTree/pi-websearch@v0.5.2
 ```
 
 To track ongoing development, use `git:github.com/LioTree/pi-websearch@main` instead. Run `/reload` in an existing session after installing or updating. A valid search configuration is required; see below.
@@ -160,7 +160,9 @@ Raw mode requires at least one direct-search provider at config load time. If th
 
 A raw call skips native resolution and filters the configured list to direct-search entries, preserving their order, priorities, routing strategy, fallback policy, and domain filters. Direct-search providers are DuckDuckGo HTML, Brave, Exa, Tavily, SERPdive, Serper, Google CSE, Kagi, Kimi's search endpoint, DeepSeek Search, and Perplexity or Z.ai entries without a `model`. OpenAI, Codex (both legacy API-key and subscription entries), Anthropic, xAI, and Perplexity or Z.ai entries with a `model` are model-answer adapters and are excluded.
 
-Raw results contain titles, URLs, and snippets without an additional model-generated answer. Snippets may still be processed by the search service. Raw mode does not fetch full pages or guarantee verbatim page text. There is no heuristic refusal detection or automatic raw fallback; normal calls that used a model-answer adapter include a retry hint when raw mode is enabled.
+Omit `mode` by default; normal routing uses native search with automatic fallback to configured providers. Use raw only for one same-query retry after a refusal or no usable sources, or an explicit request for direct search-engine results without model synthesis. Requests for URLs, citations, or official docs alone do not justify raw.
+
+Raw returns titles, URLs, and snippets, not full pages or guaranteed verbatim text; services may process snippets. There is no heuristic refusal detection or automatic raw fallback. When raw mode is enabled, normal calls using a model-answer adapter include a conditional retry hint.
 
 ## Providers
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2 - 2026-10-30
+
+### Fixed
+
+- Clarify native-first search guidance: raw is limited to one same-query retry after refusal or no usable sources, or an explicit request for direct search-engine results. Requests for URLs, citations, or official docs do not justify raw.
+- Shorten the conditional raw retry hint and keep parameter and prompt guidance consistent. Search routing is unchanged.
+
 ## 0.5.1 - 2026-10-27
 
 ### Fixed
