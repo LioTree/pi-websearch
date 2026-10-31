@@ -4,12 +4,14 @@ import type { BuildContext, ProviderModule } from "./shared.js";
 import {
 	appendDomainFilters,
 	bearerHeaders,
+	chatCompletionAnswer,
 	clamp,
 	collect,
 	getArray,
 	getObject,
 	getString,
 	result,
+	SEARCH_INSTRUCTIONS,
 } from "./shared.js";
 
 function domainQuery(query: string, allowedDomains?: string[], blockedDomains?: string[]): string {
@@ -26,6 +28,7 @@ function nativeDomainFilter(allowedDomains?: string[]): string | undefined {
 }
 
 export const zAiProvider: ProviderModule = {
+	normalizeAnswer: chatCompletionAnswer,
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		if (config.model) {
 			const webSearch: JsonObject = {
@@ -42,7 +45,10 @@ export const zAiProvider: ProviderModule = {
 				init: { method: "POST", headers: bearerHeaders(config) },
 				body: {
 					model: config.model,
-					messages: [{ role: "user", content: domainQuery(request.query, allowedDomains, blockedDomains) }],
+					messages: [
+						{ role: "system", content: SEARCH_INSTRUCTIONS },
+						{ role: "user", content: domainQuery(request.query, allowedDomains, blockedDomains) },
+					],
 					tools: [{ type: "web_search", web_search: webSearch }],
 				},
 			};

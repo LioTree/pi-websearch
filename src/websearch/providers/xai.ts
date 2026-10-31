@@ -1,10 +1,11 @@
 import { providerUrl } from "../provider-endpoints.js";
 import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.js";
-import { normalizeResponsesPayload } from "./openai-responses.js";
+import { normalizeResponsesPayload, responsesAnswer } from "./openai-responses.js";
 import type { BuildContext, ProviderModule } from "./shared.js";
-import { appendDomainFilters, bearerHeaders } from "./shared.js";
+import { appendDomainFilters, bearerHeaders, SEARCH_INSTRUCTIONS } from "./shared.js";
 
 export const xaiProvider: ProviderModule = {
+	normalizeAnswer: responsesAnswer,
 	buildRequest({ config, request, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		if ((allowedDomains?.length ?? 0) > 5 || (blockedDomains?.length ?? 0) > 5) {
 			throw new Error("xAI hosted search supports at most 5 allowed or excluded domains; use a fallback provider.");
@@ -25,6 +26,7 @@ export const xaiProvider: ProviderModule = {
 			body: {
 				model: config.model ?? "grok-4.3",
 				input,
+				instructions: SEARCH_INSTRUCTIONS,
 				tools: [webSearchTool],
 				tool_choice: "required",
 			},

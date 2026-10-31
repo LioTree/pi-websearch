@@ -33,6 +33,11 @@ function eventFailure(event: JsonObject, fallback: string): CodexStreamError {
 	});
 }
 
+function outputItemKey(item: JsonValue): string {
+	const id = getString(getObject(item)?.["id"]);
+	return id ? `id:${id}` : `value:${JSON.stringify(item)}`;
+}
+
 /** Read through a successful terminal event, not EOF. Failed/truncated streams never yield partial sources. */
 export async function readCodexResponse(response: Response, signal: AbortSignal): Promise<JsonObject> {
 	signal.throwIfAborted();
@@ -81,7 +86,7 @@ export async function readCodexResponse(response: Response, signal: AbortSignal)
 		if (type === "response.output_item.done") {
 			const item = getObject(parsed["item"]);
 			if (item && (item["type"] === "web_search_call" || item["type"] === "message")) {
-				completedItems.set(JSON.stringify(item), item);
+				completedItems.set(outputItemKey(item), item);
 			}
 		}
 		if (type !== "response.completed" && type !== "response.done") return undefined;
@@ -90,10 +95,11 @@ export async function readCodexResponse(response: Response, signal: AbortSignal)
 			throw eventFailure(parsed, "Codex terminal response did not complete successfully.");
 		}
 		// Some gateways omit output items from the terminal snapshot. Merge only
-		// completed items and deduplicate exact copies; normalizers deduplicate URLs.
+		// completed items by identity. The terminal snapshot wins when an item is
+		// present in both, regardless of JSON key order or updated fields.
 		const output = new Map<string, JsonValue>();
-		for (const item of [...getArray(terminal["output"]), ...completedItems.values()]) {
-			output.set(JSON.stringify(item), item);
+		for (const item of [...completedItems.values(), ...getArray(terminal["output"])]) {
+			output.set(outputItemKey(item), item);
 		}
 		return { ...terminal, output: [...output.values()] };
 	}

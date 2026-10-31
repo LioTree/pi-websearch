@@ -18,10 +18,10 @@ const loadWebsearchConfig = vi.hoisted(() => vi.fn<LoadWebsearchConfig>());
 
 vi.mock("../src/websearch/config.js", () => ({ loadWebsearchConfig }));
 
-const missingConfig: ConfigLoadResult = {
+const invalidLoadedConfig: ConfigLoadResult = {
 	ok: false,
-	reason: "missing_config",
-	message: "Missing websearch config. Create .pi/websearch.json or ~/.pi/websearch.json before starting pi.",
+	reason: "invalid_config",
+	message: "Invalid JSON object in /tmp/status/.pi/websearch.json",
 };
 
 const activeConfig: ConfigLoadResult = {
@@ -164,6 +164,48 @@ describe("websearch extension lifecycle", () => {
 		vi.unstubAllGlobals();
 	});
 
+	it("#given default config from absent files #when starting and searching #then activates anonymous MCP without startup errors", async () => {
+		loadWebsearchConfig.mockResolvedValue({
+			ok: true,
+			source: "default",
+			config: {
+				strategy: "priority",
+				fallback: true,
+				auto: true,
+				providers: [{ provider: "exa-mcp" }],
+			},
+		});
+		const harness = createHarness();
+		const fetchMock = vi.fn(async () =>
+			jsonResponse({
+				jsonrpc: "2.0",
+				id: 1,
+				result: {
+					content: [
+						{
+							type: "text",
+							text: "Title: Docs\nURL: https://example.com/docs\nPublished: N/A\nAuthor: N/A\nText: Official docs",
+						},
+					],
+				},
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		await harness.sessionStart?.({}, sessionContext("/tmp/no-config", undefined, undefined, harness));
+		const result = await lastTool(harness).execute(
+			"default",
+			{ query: "docs" },
+			undefined,
+			undefined,
+			toolContext(undefined, registryFor("unused")),
+		);
+		expect(harness.notify).not.toHaveBeenCalled();
+		expect(harness.tools).toHaveLength(2);
+		expect(lastTool(harness).parameters.properties).not.toHaveProperty("mode");
+		expect(result.details).toMatchObject({ provider: "exa-mcp", results: [{ url: "https://example.com/docs" }] });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("#given explicit config #when session starts #then clears UI and re-registers the tool from loaded config", async () => {
 		// given
 		const harness = createHarness();
@@ -222,7 +264,7 @@ describe("websearch extension lifecycle", () => {
 	it("#given hasUI false #when config is invalid #then startup does not touch UI", async () => {
 		// given
 		const harness = createHarness();
-		loadWebsearchConfig.mockResolvedValue(missingConfig);
+		loadWebsearchConfig.mockResolvedValue(invalidLoadedConfig);
 
 		// when
 		await harness.sessionStart?.({}, {
@@ -496,7 +538,7 @@ describe("/websearch status", () => {
 	it("#given invalid config #when status runs #then reports the error rather than an active search", async () => {
 		// given
 		const harness = createHarness();
-		loadWebsearchConfig.mockResolvedValue(missingConfig);
+		loadWebsearchConfig.mockResolvedValue(invalidLoadedConfig);
 		await harness.sessionStart?.({}, sessionContext("/tmp/status", undefined, undefined, harness));
 		const notify = vi.fn();
 
@@ -506,6 +548,6 @@ describe("/websearch status", () => {
 		// then
 		expect(notify.mock.calls[0]?.[1]).toBe("error");
 		expect(notify.mock.calls[0]?.[0]).toContain("Web search inactive");
-		expect(notify.mock.calls[0]?.[0]).toContain("Missing websearch config");
+		expect(notify.mock.calls[0]?.[0]).toContain("Invalid JSON object");
 	});
 });

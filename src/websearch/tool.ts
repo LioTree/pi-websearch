@@ -476,6 +476,6 @@ export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 
 export const web_search = createWebSearchTool(() => ({
 	ok: false,
-	reason: "missing_config",
-	message: "Missing websearch config. Create .pi/websearch.json or ~/.pi/websearch.json before starting pi.",
+	reason: "invalid_config",
+	message: "Websearch configuration has not been loaded yet.",
 }));

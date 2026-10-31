@@ -1,6 +1,20 @@
 import { type DomainPolicy, EmptyDomainPolicyError, isHostAllowedByPolicy, mergeDomainFilters } from "./domains.js";
 import { CodexStreamError, readCodexResponse } from "./providers/codex-stream.js";
-import { buildSearchRequest, normalizeSearchResponse } from "./providers.js";
+import { ExaMcpError, readExaMcpResponse } from "./providers/exa-mcp.js";
+import {
+	buildSearchRequest,
+	isDirectSearchProvider,
+	normalizeSearchAnswer,
+	normalizeSearchResponse,
+} from "./providers.js";
+import {
+	advanceRoundRobin,
+	createSearchRoutingState,
+	providerEntryLabel,
+	type SearchRoutingState,
+	selectOrder,
+} from "./routing-order.js";
+import { collectSecrets, redactKnownSecrets, sanitizeDiagnostic, sanitizeResultItem } from "./search-redaction.js";
 import type {
 	JsonObject,
 	NativeRouteStatus,
@@ -14,7 +28,9 @@ import type {
 	WebsearchConfig,
 } from "./types.js";
 
-const MAX_ERROR_DETAIL_LENGTH = 500;
+export { createSearchRoutingState, providerEntryLabel, type SearchRoutingState } from "./routing-order.js";
+export { formatSearchText } from "./search-text.js";
+
 const DEFAULT_PROVIDER_TIMEOUT_MS = 60_000;
 /** Finite wall-clock budget covering native auth resolution and every search attempt. */
 export const SEARCH_TOTAL_BUDGET_MS = 180_000;
@@ -22,10 +38,6 @@ const MAX_RESULTS_LIMIT = 50;
 
 function isJsonObject(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function truncate(value: string, max: number): string {
-	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
 function clampInteger(value: number, min: number, max: number): number {
@@ -41,13 +53,6 @@ export function effectiveMaxResults(config: WebsearchConfig, request?: Pick<Sear
 	return normalizeMaxResults(config.maxResults ?? request?.maxResults);
 }
 
-function policyFrom(source: DomainPolicy): DomainPolicy {
-	return {
-		...(source.allowedDomains === undefined ? {} : { allowedDomains: source.allowedDomains }),
-		...(source.blockedDomains === undefined ? {} : { blockedDomains: source.blockedDomains }),
-	};
-}
-
 /**
  * Global policy wins over request policy and provider policy. Allowed scopes can
  * only narrow; blocked scopes union. An empty allowed intersection throws
@@ -57,7 +62,7 @@ export function effectiveDomainFilters(
 	config: Pick<WebsearchConfig, "allowedDomains" | "blockedDomains">,
 	request: Pick<SearchRequest, "allowedDomains" | "blockedDomains">,
 ): DomainPolicy {
-	return mergeDomainFilters(policyFrom(config), policyFrom(request));
+	return mergeDomainFilters(config, request);
 }
 
 /**
@@ -103,116 +108,6 @@ function effectiveRequest(config: WebsearchConfig, request: SearchRequest): Sear
 		maxResults: effectiveMaxResults(config, request),
 		...effectiveDomainFilters(config, request),
 	};
-}
-
-const CREDENTIAL_HEADER_NAME =
-	/(?:^|[-_])(?:authorization|api[-_]?key|apikey|subscription[-_]?token|token|secret|password|passwd|credential|account[-_]?id|key)(?:[-_]|$)/i;
-const ENDPOINT_SECRET_QUERY_NAME =
-	/(?:^|[-_])(?:access[-_]?token|api[-_]?key|apikey|auth|authorization|key|password|passwd|secret|sig|signature|token|client[-_]?secret|subscription[-_]?key|private[-_]?key)(?:[-_]|$)/i;
-const DIAGNOSTIC_SECRET_QUERY =
-	/([?&](?:access_token|api_key|apikey|auth|authorization|key|password|secret|sig|signature|token)=)[^&\s)"']+/gi;
-
-function addSecretValue(secrets: Set<string>, value: string | null | undefined): void {
-	if (!value) return;
-	const candidates = [value];
-	const authMatch = value.match(/^(?:Bearer|Basic|Token)\s+(.+)$/i);
-	if (authMatch?.[1]) candidates.push(authMatch[1].trim());
-	for (const candidate of candidates) {
-		if (candidate.length >= 4) secrets.add(candidate);
-	}
-}
-
-function secretsFromUrl(value: string | undefined): Set<string> {
-	const secrets = new Set<string>();
-	if (!value) return secrets;
-	try {
-		const parsed = new URL(value);
-		for (const [key, parameterValue] of parsed.searchParams.entries()) {
-			if (ENDPOINT_SECRET_QUERY_NAME.test(key)) addSecretValue(secrets, parameterValue);
-		}
-	} catch {
-		// Not a URL; there is nothing reliable to extract.
-	}
-	return secrets;
-}
-
-function collectSecrets(
-	config: SearchProviderEntry | undefined,
-	endpoint: string | undefined,
-	builtHeaders?: Record<string, string>,
-): Set<string> {
-	const secrets = new Set<string>();
-	if (config?.apiKey) addSecretValue(secrets, config.apiKey);
-	for (const headers of [config?.headers, builtHeaders]) {
-		for (const [name, headerValue] of Object.entries(headers ?? {})) {
-			if (CREDENTIAL_HEADER_NAME.test(name)) addSecretValue(secrets, headerValue);
-		}
-	}
-	for (const secret of secretsFromUrl(config?.baseUrl)) secrets.add(secret);
-	for (const secret of secretsFromUrl(endpoint)) secrets.add(secret);
-	return secrets;
-}
-
-/** Redact only values known to be credentials. Never applies name/word heuristics. */
-function redactKnownSecrets(value: string, secrets: ReadonlySet<string>): string {
-	let result = value;
-	for (const secret of secrets) result = result.split(secret).join("[redacted]");
-	return result;
-}
-
-/** Diagnostics may additionally redact recognizable token shapes and credential query names. */
-function redactDiagnostic(value: string, secrets: ReadonlySet<string>): string {
-	return redactKnownSecrets(value, secrets)
-		.replace(/\bBearer\s+[^\s,;"']+/gi, "Bearer [redacted]")
-		.replace(/\b(sk-[A-Za-z0-9_-]{8,})\b/g, "[redacted]")
-		.replace(DIAGNOSTIC_SECRET_QUERY, "$1[redacted]");
-}
-
-function sanitizeUrl(value: string, secrets: ReadonlySet<string>): string | undefined {
-	let parsed: URL;
-	try {
-		parsed = new URL(value);
-	} catch {
-		return undefined;
-	}
-	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
-
-	let changed = Boolean(parsed.username || parsed.password);
-	if (changed) {
-		parsed.username = "";
-		parsed.password = "";
-	}
-
-	// Redact a query value only when it contains an actual known credential.
-	// Benign parameters such as ?key=configuration remain byte-for-byte intact.
-	for (const [key, parameterValue] of [...parsed.searchParams.entries()]) {
-		if ([...secrets].some((secret) => parameterValue.includes(secret))) {
-			parsed.searchParams.set(key, "[redacted]");
-			changed = true;
-		}
-	}
-
-	const redactedRaw = redactKnownSecrets(value, secrets);
-	if (!changed) return redactedRaw;
-	return redactKnownSecrets(parsed.href, secrets);
-}
-
-function sanitizeResultItem(item: SearchResultItem, secrets: ReadonlySet<string>): SearchResultItem | undefined {
-	const url = sanitizeUrl(item.url, secrets);
-	if (!url) return undefined;
-	const sanitized: SearchResultItem = {
-		title: redactKnownSecrets(item.title, secrets),
-		url,
-	};
-	if (item.snippet !== undefined) sanitized.snippet = redactKnownSecrets(item.snippet, secrets);
-	if (item.score !== undefined) sanitized.score = item.score;
-	if (item.source !== undefined) sanitized.source = redactKnownSecrets(item.source, secrets);
-	if (item.publishedAt !== undefined) sanitized.publishedAt = redactKnownSecrets(item.publishedAt, secrets);
-	return sanitized;
-}
-
-function sanitizeDiagnostic(value: string, secrets: ReadonlySet<string>): string {
-	return truncate(redactDiagnostic(value, secrets), MAX_ERROR_DETAIL_LENGTH);
 }
 
 function extractErrorDetail(payload: unknown, bodyText: string): string {
@@ -281,35 +176,6 @@ function searchAbortSignal(
 	};
 }
 
-function providerLabelForFailure(config: SearchProviderEntry | undefined): SearchProviderEntry["provider"] {
-	return config?.provider ?? "exa";
-}
-
-function failureDetails(
-	config: SearchProviderEntry | undefined,
-	request: SearchRequest,
-	startedAt: number,
-	failureKind: SearchFailureKind,
-	error: string,
-	httpStatus?: number,
-	stage?: SearchDetails["stage"],
-	secrets: ReadonlySet<string> = new Set<string>(),
-): SearchDetails {
-	const details: SearchDetails = {
-		provider: providerLabelForFailure(config),
-		query: request.query,
-		results: [],
-		durationMs: Date.now() - startedAt,
-		truncated: false,
-		error: sanitizeDiagnostic(error, secrets),
-		failureKind,
-		...(httpStatus === undefined ? {} : { httpStatus }),
-		...(stage ? { stage } : {}),
-	};
-	if (config?.id !== undefined) details.entryId = config.id;
-	return details;
-}
-
 function explicitUnsupportedFailure(status: number, detail: string): boolean {
 	if (status !== 400 && status !== 404) return false;
 	const text = detail.replace(/["'`]/g, "");
@@ -359,7 +225,7 @@ function hasStructuredRefusal(value: unknown, depth = 0): boolean {
 }
 
 function domainFiltersForEntry(entry: SearchProviderEntry, request: SearchRequest): DomainPolicy {
-	return mergeDomainFilters(policyFrom(request), policyFrom(entry));
+	return mergeDomainFilters(request, entry);
 }
 
 function resultAllowedByDomains(url: string, filters: DomainPolicy): boolean {
@@ -397,92 +263,6 @@ function normalizeResults(
 	return { results, invalid, filtered };
 }
 
-export interface SearchRoutingState {
-	roundRobinCursor: number;
-	successCounts: number[];
-}
-
-export function createSearchRoutingState(providerCount: number): SearchRoutingState {
-	return { roundRobinCursor: 0, successCounts: Array.from({ length: providerCount }, () => 0) };
-}
-
-export function providerEntryLabel(entry: {
-	readonly provider: string;
-	readonly id?: string;
-	readonly entryId?: string;
-}): string {
-	const id = entry.entryId ?? entry.id;
-	if (!id || id === entry.provider) return entry.provider;
-	const nativePrefix = `native-${entry.provider}-`;
-	return `${entry.provider}/${id.startsWith(nativePrefix) ? "native" : id}`;
-}
-
-function sortedPriorityIndices(providers: SearchProviderEntry[]): number[] {
-	return providers
-		.map((provider, index) => ({ index, priority: provider.priority ?? index }))
-		.sort((left, right) => left.priority - right.priority || left.index - right.index)
-		.map((item) => item.index);
-}
-
-function providerWeight(provider: SearchProviderEntry, providerCount: number): number {
-	const raw = provider.weight ?? 1;
-	if (!Number.isFinite(raw)) return 1;
-	const cap = Math.max(1, Math.floor(Number.MAX_SAFE_INTEGER / Math.max(1, providerCount)));
-	return Math.min(cap, Math.max(1, Math.trunc(raw)));
-}
-
-function weightedTotal(providers: SearchProviderEntry[]): number {
-	let total = 0;
-	for (const provider of providers) total += providerWeight(provider, providers.length);
-	return total;
-}
-
-function weightedOrder(providers: SearchProviderEntry[], cursor: number): number[] {
-	const count = providers.length;
-	if (count === 0) return [];
-	const weights = providers.map((provider) => providerWeight(provider, count));
-	const total = weights.reduce((sum, weight) => sum + weight, 0);
-	if (total <= 0) return providers.map((_provider, index) => index);
-	const normalizedCursor = Number.isFinite(cursor) ? Math.trunc(cursor) : 0;
-	const position = ((normalizedCursor % total) + total) % total;
-	let cumulative = 0;
-	let start = 0;
-	for (let index = 0; index < weights.length; index += 1) {
-		cumulative += weights[index] ?? 0;
-		if (position < cumulative) {
-			start = index;
-			break;
-		}
-	}
-	return Array.from({ length: count }, (_value, offset) => (start + offset) % count);
-}
-
-function selectOrder(strategy: RoutingStrategy, providers: SearchProviderEntry[], state: SearchRoutingState): number[] {
-	if (strategy === "priority") return sortedPriorityIndices(providers);
-	if (strategy === "round-robin") return weightedOrder(providers, state.roundRobinCursor);
-
-	let selected = 0;
-	let selectedCount = state.successCounts[0] ?? 0;
-	for (let index = 1; index < providers.length; index += 1) {
-		const count = state.successCounts[index] ?? 0;
-		if (count < selectedCount) {
-			selected = index;
-			selectedCount = count;
-		}
-	}
-	return [selected, ...providers.map((_provider, index) => index).filter((index) => index !== selected)];
-}
-
-function advanceRoundRobin(
-	strategy: RoutingStrategy,
-	providers: SearchProviderEntry[],
-	state: SearchRoutingState,
-): void {
-	if (strategy !== "round-robin") return;
-	const total = weightedTotal(providers);
-	if (total > 0) state.roundRobinCursor = (state.roundRobinCursor + 1) % total;
-}
-
 export interface ProviderSearchOptions {
 	timeoutMs?: number;
 	deadline?: number;
@@ -502,110 +282,68 @@ export async function performProviderSearch(
 ): Promise<SearchDetails> {
 	throwIfAborted(signal);
 	const startedAt = Date.now();
-	const baseSecrets = collectSecrets(config, undefined);
+	let secrets = collectSecrets(config, undefined);
+	const fail = (failureKind: SearchFailureKind, error: string, httpStatus?: number): SearchDetails => ({
+		provider: config.provider,
+		query: request.query,
+		results: [],
+		durationMs: Date.now() - startedAt,
+		truncated: false,
+		error: sanitizeDiagnostic(error, secrets),
+		failureKind,
+		...(httpStatus === undefined ? {} : { httpStatus }),
+		...(options.stage ? { stage: options.stage } : {}),
+		...(config.id === undefined ? {} : { entryId: config.id }),
+	});
 	const globalTimeout = Math.max(1, Math.trunc(options.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS));
 	const remaining = options.deadline === undefined ? globalTimeout : options.deadline - startedAt;
 	if (remaining <= 0) {
-		return failureDetails(
-			config,
-			request,
-			startedAt,
-			"timeout",
-			`Search budget exhausted before provider ${providerEntryLabel(config)}`,
-			undefined,
-			options.stage,
-			baseSecrets,
-		);
+		return fail("timeout", `Search budget exhausted before provider ${providerEntryLabel(config)}`);
 	}
 	const timeoutMs = Math.min(providerTimeoutMs(config, globalTimeout), remaining);
 	const abort = searchAbortSignal(signal, timeoutMs);
-
-	let built: ReturnType<typeof buildSearchRequest>;
-	try {
-		built = buildSearchRequest(entryWithNarrowedLimit(config, request.maxResults), request);
-	} catch (error) {
-		abort.cleanup();
-		if (error instanceof EmptyDomainPolicyError) {
-			return failureDetails(
-				config,
-				request,
-				startedAt,
-				"no-results",
-				`${error.message}; no search was performed.`,
-				undefined,
-				options.stage,
-				baseSecrets,
-			);
-		}
-		return failureDetails(
-			config,
-			request,
-			startedAt,
-			"request",
-			error instanceof Error ? error.message : "Search request construction failed",
-			undefined,
-			options.stage,
-			baseSecrets,
-		);
-	}
-
-	const secrets = collectSecrets(config, built.url, built.init.headers);
-	let response: Response;
-	try {
-		const init: RequestInit = {
-			...built.init,
-			signal: abort.signal,
-			redirect: "error",
-		};
-		if (built.body !== undefined) init.body = JSON.stringify(built.body);
-		response = await fetch(built.url, init);
-	} catch (error) {
-		abort.cleanup();
-		if (signal?.aborted) throw abortReason(signal);
-		const failureKind: SearchFailureKind = isTimeoutError(error, abort.signal) ? "timeout" : "network";
-		return failureDetails(
-			config,
-			request,
-			startedAt,
-			failureKind,
-			error instanceof Error ? error.message : "Search request failed",
-			undefined,
-			options.stage,
-			secrets,
-		);
-	}
-
+	let response: Response | undefined;
 	let bodyText = "";
 	let streamedPayload: JsonObject | undefined;
 	try {
-		if (
-			response.ok &&
-			(built.responseFormat === "codex-sse" ||
-				(built.responseFormat === "responses-sse" &&
-					response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json"))
-		) {
-			streamedPayload = await readCodexResponse(response, abort.signal);
-		} else {
-			bodyText = await response.text();
+		let built: ReturnType<typeof buildSearchRequest>;
+		try {
+			built = buildSearchRequest(entryWithNarrowedLimit(config, request.maxResults), request);
+		} catch (error) {
+			if (error instanceof EmptyDomainPolicyError) {
+				return fail("no-results", `${error.message}; no search was performed.`);
+			}
+			return fail("request", error instanceof Error ? error.message : "Search request construction failed");
 		}
-	} catch (error) {
-		abort.cleanup();
-		if (signal?.aborted) throw abortReason(signal);
-		const failureKind: SearchFailureKind = isTimeoutError(error, abort.signal)
-			? "timeout"
-			: error instanceof CodexStreamError
-				? codexStreamFailureKind(error)
-				: "network";
-		return failureDetails(
-			config,
-			request,
-			startedAt,
-			failureKind,
-			error instanceof Error ? error.message : "Search response read failed",
-			error instanceof CodexStreamError ? response.status : undefined,
-			options.stage,
-			secrets,
-		);
+
+		secrets = collectSecrets(config, built.url, built.init.headers);
+		try {
+			const init: RequestInit = { ...built.init, signal: abort.signal, redirect: "error" };
+			if (built.body !== undefined) init.body = JSON.stringify(built.body);
+			response = await fetch(built.url, init);
+			if (response.ok && built.responseFormat === "exa-mcp") {
+				streamedPayload = await readExaMcpResponse(response, abort.signal);
+			} else if (
+				response.ok &&
+				(built.responseFormat === "codex-sse" ||
+					(built.responseFormat === "responses-sse" &&
+						response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json"))
+			) {
+				streamedPayload = await readCodexResponse(response, abort.signal);
+			} else {
+				bodyText = await response.text();
+			}
+		} catch (error) {
+			if (signal?.aborted) throw abortReason(signal);
+			let kind: SearchFailureKind = "network";
+			if (isTimeoutError(error, abort.signal)) kind = "timeout";
+			else if (response && error instanceof CodexStreamError) kind = codexStreamFailureKind(error);
+			else if (response && error instanceof ExaMcpError) kind = error.failureKind;
+			const message = response ? "Search response read failed" : "Search request failed";
+			const status =
+				error instanceof CodexStreamError || error instanceof ExaMcpError ? response?.status : undefined;
+			return fail(kind, error instanceof Error ? error.message : message, status);
+		}
 	} finally {
 		abort.cleanup();
 	}
@@ -634,124 +372,91 @@ export async function performProviderSearch(
 	if (!response.ok) {
 		const detail = extractErrorDetail(payload, bodyText);
 		const failureKind = classifyHttpFailure(response.status, detail);
-		return failureDetails(
-			config,
-			request,
-			startedAt,
-			failureKind,
-			httpErrorMessage(response.status, payload, bodyText, secrets),
-			response.status,
-			options.stage,
-			secrets,
-		);
+		return fail(failureKind, httpErrorMessage(response.status, payload, bodyText, secrets), response.status);
 	}
 
 	if (!payloadIsStructured) {
-		return failureDetails(
-			config,
-			request,
-			startedAt,
+		return fail(
 			"invalid-response",
 			`Search provider ${providerEntryLabel(config)} returned an empty or invalid response body.`,
 			response.status,
-			options.stage,
-			secrets,
 		);
 	}
 
 	let normalized: { results: SearchResultItem[]; invalid: number; filtered: number };
+	let filters: DomainPolicy;
 	try {
-		normalized = normalizeResults(config.provider, payload, secrets, domainFiltersForEntry(config, request));
+		filters = domainFiltersForEntry(config, request);
+		normalized = normalizeResults(config.provider, payload, secrets, filters);
 	} catch (error) {
 		if (error instanceof EmptyDomainPolicyError) {
-			return failureDetails(
-				config,
-				request,
-				startedAt,
-				"no-results",
-				error.message,
-				response.status,
-				options.stage,
-				secrets,
-			);
+			return fail("no-results", error.message, response.status);
 		}
-		return failureDetails(
-			config,
-			request,
-			startedAt,
-			"invalid-response",
+		return fail(
+			error instanceof ExaMcpError ? error.failureKind : "invalid-response",
 			error instanceof Error ? error.message : "Search response normalization failed",
 			response.status,
-			options.stage,
-			secrets,
 		);
 	}
 
 	if (normalized.results.length === 0) {
 		if (isJsonObject(payload) && (payload["error"] !== undefined || payload["success"] === false)) {
 			const detail = extractErrorDetail(payload, bodyText);
-			return failureDetails(
-				config,
-				request,
-				startedAt,
+			return fail(
 				"request",
 				detail
 					? `Search provider ${providerEntryLabel(config)} returned an error: ${detail}`
 					: `Search provider ${providerEntryLabel(config)} returned an error payload.`,
 				response.status,
-				options.stage,
-				secrets,
 			);
 		}
 		if (hasStructuredRefusal(payload)) {
-			return failureDetails(
-				config,
-				request,
-				startedAt,
+			return fail(
 				"refusal",
 				`Search provider ${providerEntryLabel(config)} returned a refusal for "${request.query}".`,
 				response.status,
-				options.stage,
-				secrets,
 			);
 		}
 		if (normalized.filtered > 0) {
-			return failureDetails(
-				config,
-				request,
-				startedAt,
+			return fail(
 				"no-results",
 				`Search provider ${providerEntryLabel(config)} returned no results after domain filters for "${request.query}".`,
 				response.status,
-				options.stage,
-				secrets,
 			);
 		}
 		if (normalized.invalid > 0) {
-			return failureDetails(
-				config,
-				request,
-				startedAt,
+			return fail(
 				"invalid-response",
 				`Search provider ${providerEntryLabel(config)} returned no usable source URLs.`,
 				response.status,
-				options.stage,
-				secrets,
 			);
 		}
-		return failureDetails(
-			config,
-			request,
-			startedAt,
+		return fail(
 			"no-results",
 			`Search provider ${providerEntryLabel(config)} returned no results for "${request.query}".`,
 			response.status,
-			options.stage,
-			secrets,
 		);
 	}
 
 	throwIfAborted(signal);
+	const answer = isDirectSearchProvider(config) ? undefined : normalizeSearchAnswer(config.provider, payload);
+	// Prose/Markdown delimiters are not part of a URL's host. Match schemes
+	// case-insensitively and remove terminal sentence punctuation.
+	const answerUrls = (answer?.match(/https?:\/\/[^\s<>"'`[\](){}，。；、！？,;]+/gi) ?? []).map((url) =>
+		url.replace(/[.!?:]+$/, ""),
+	);
+	if (
+		answer &&
+		(normalized.filtered > 0 ||
+			normalized.invalid > 0 ||
+			answerUrls.some((url) => !resultAllowedByDomains(url, filters)))
+	) {
+		return fail(
+			"no-results",
+			"Search answer includes invalid or excluded sources; mixed-source synthesis cannot be safely filtered.",
+			response.status,
+		);
+	}
 	const results = normalized.results.slice(0, request.maxResults);
 	const details: SearchDetails = {
 		provider: config.provider,
@@ -760,6 +465,7 @@ export async function performProviderSearch(
 		durationMs: Date.now() - startedAt,
 		truncated: normalized.results.length > request.maxResults,
 	};
+	if (answer) details.answer = redactKnownSecrets(answer, secrets);
 	if (config.id !== undefined) details.entryId = config.id;
 	if (options.stage) details.stage = options.stage;
 	return details;
@@ -840,7 +546,6 @@ export async function performSearch(
 	const deadline = options.deadline ?? startedAt + SEARCH_TOTAL_BUDGET_MS;
 	let effective: SearchRequest;
 	try {
-		validateDomainPolicies(config, request);
 		effective = effectiveRequest(config, request);
 	} catch (error) {
 		if (error instanceof EmptyDomainPolicyError) {
@@ -869,6 +574,7 @@ export async function performSearch(
 	});
 	const routeLabels = options.nativeEntry ? [providerEntryLabel(options.nativeEntry), ...chainLabels] : chainLabels;
 	const collected = new Map<string, SearchResultItem>();
+	const answers: string[] = [];
 	let firstSuccessfulDetails: SearchDetails | undefined;
 	let nativeStatus = options.nativeStatus;
 	const mode = options.mode ?? "normal";
@@ -955,6 +661,7 @@ export async function performSearch(
 		}
 
 		firstSuccessfulDetails ??= details;
+		if (details.answer) answers.push(`${providerEntryLabel(details)}:\n${details.answer}`);
 		for (const item of details.results) {
 			if (collected.size >= effective.maxResults) break;
 			collected.set(item.url, item);
@@ -969,6 +676,7 @@ export async function performSearch(
 			...(firstSuccessfulDetails.entryId ? { entryId: firstSuccessfulDetails.entryId } : {}),
 			query: effective.query,
 			results,
+			...(answers.length ? { answer: answers.join("\n\n") } : {}),
 			durationMs: Date.now() - startedAt,
 			truncated: results.length >= effective.maxResults,
 			strategy: config.strategy,
@@ -998,41 +706,4 @@ export async function performSearch(
 		failureKind: aggregateFailureKind(attempts),
 		...(lastAttempt?.httpStatus === undefined ? {} : { httpStatus: lastAttempt.httpStatus }),
 	};
-}
-
-function formatAttempt(attempt: SearchAttempt): string {
-	const status = attempt.error
-		? `failed${attempt.failureKind ? `(${attempt.failureKind})` : ""}: ${attempt.error}`
-		: `${attempt.resultsCount} result${attempt.resultsCount === 1 ? "" : "s"}`;
-	return `${providerEntryLabel(attempt)} ${status}`;
-}
-
-export function formatSearchText(details: SearchDetails): string {
-	const lines: string[] = [];
-	if (details.error) {
-		lines.push(details.error);
-		if (details.attempts && details.attempts.length > 0) {
-			lines.push("", `Routing attempts: ${details.attempts.map(formatAttempt).join(" -> ")}`);
-		}
-		return lines.join("\n");
-	}
-	if (details.results.length === 0) return `No web search results found for "${details.query}".`;
-
-	const route =
-		details.stage === "native"
-			? ` via ${providerEntryLabel(details)} (native)`
-			: details.strategy
-				? ` via ${providerEntryLabel(details)} (${details.strategy})`
-				: ` via ${details.provider}`;
-	lines.push(`Web search results for "${details.query}"${route}:`, "");
-	if (details.attempts && details.attempts.length > 0) {
-		lines.push(`Routing attempts: ${details.attempts.map(formatAttempt).join(" -> ")}`, "");
-	}
-	for (const [index, item] of details.results.entries()) {
-		lines.push(`${index + 1}. ${item.title}`);
-		lines.push(`   ${item.url}`);
-		if (item.snippet) lines.push(`   ${item.snippet}`);
-	}
-	lines.push("", "REMINDER: Include relevant sources from the URLs above in the final answer.");
-	return lines.join("\n");
 }

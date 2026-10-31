@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type NativeModelInfo, resolveNativeRoute } from "../src/websearch/native.js";
+import { SEARCH_INSTRUCTIONS } from "../src/websearch/providers/shared.js";
 import { buildSearchRequest, normalizeSearchResponse } from "../src/websearch/providers.js";
 import { performProviderSearch, performSearch } from "../src/websearch/search.js";
 import type { SearchProviderEntry, WebsearchConfig } from "../src/websearch/types.js";
@@ -37,6 +38,7 @@ describe("routing integration regressions", () => {
 			expect(built.init.headers).toHaveProperty("x-app", "cli");
 			expect(built.body?.["system"]).toEqual([
 				{ type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+				{ type: "text", text: SEARCH_INSTRUCTIONS },
 			]);
 		}
 	});
@@ -57,7 +59,7 @@ describe("routing integration regressions", () => {
 		// when
 		const results = normalizeSearchResponse("anthropic", payload);
 		// then
-		expect(results[0]?.snippet).toBe("Search result summary");
+		expect(results[0]?.snippet).toBeUndefined();
 		expect(results[0]?.publishedAt).toBe("2026-01-01");
 	});
 

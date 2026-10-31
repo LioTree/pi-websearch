@@ -4,6 +4,7 @@ import { codexSubscriptionProvider } from "./providers/codex.js";
 import { deepseekProvider } from "./providers/deepseek.js";
 import { duckDuckGoHtmlProvider } from "./providers/duckduckgo-html.js";
 import { exaProvider } from "./providers/exa.js";
+import { exaMcpProvider } from "./providers/exa-mcp.js";
 import { googleCseProvider } from "./providers/google-cse.js";
 import { kagiProvider } from "./providers/kagi.js";
 import { kimiProvider } from "./providers/kimi.js";
@@ -29,6 +30,7 @@ export { mergeHeaders } from "./providers/shared.js";
 
 const PROVIDER_MODULES: Record<SearchProvider, ProviderModule> = {
 	exa: exaProvider,
+	"exa-mcp": exaMcpProvider,
 	tavily: tavilyProvider,
 	serpdive: serpdiveProvider,
 	brave: braveProvider,
@@ -61,6 +63,10 @@ export function buildSearchRequest(config: SearchProviderConfig, request: Search
 
 export function normalizeSearchResponse(provider: SearchProvider, payload: unknown): SearchResultItem[] {
 	return PROVIDER_MODULES[provider].normalizeResponse(parseObjectPayload(payload));
+}
+
+export function normalizeSearchAnswer(provider: SearchProvider, payload: unknown): string | undefined {
+	return PROVIDER_MODULES[provider].normalizeAnswer?.(parseObjectPayload(payload));
 }
 
 const ANSWER_PROVIDERS = new Set<SearchProvider>(["openai", "openai-codex", "codex", "anthropic", "xai"]);

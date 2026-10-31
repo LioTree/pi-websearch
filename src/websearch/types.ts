@@ -1,5 +1,6 @@
 export type SearchProvider =
 	| "exa"
+	| "exa-mcp"
 	| "tavily"
 	| "serpdive"
 	| "brave"
@@ -114,7 +115,7 @@ export interface SearchRequest {
 export interface BuiltSearchRequest {
 	url: string;
 	/** Responses streams are decoded incrementally; Codex subscriptions require SSE. */
-	responseFormat?: "codex-sse" | "responses-sse";
+	responseFormat?: "codex-sse" | "responses-sse" | "exa-mcp";
 	init: {
 		method: "GET" | "POST";
 		headers: Record<string, string>;

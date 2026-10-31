@@ -20,7 +20,7 @@ async function writeProjectConfig(root: string, value: unknown): Promise<string>
 }
 
 describe("loadWebsearchConfig", () => {
-	it("#given no config files #when loading config #then refuses with missing_config instead of a hidden default", async () => {
+	it("#given no config files #when loading config #then enables native-first with only anonymous Exa MCP", async () => {
 		// given
 		const root = await makeTempHome();
 
@@ -29,10 +29,27 @@ describe("loadWebsearchConfig", () => {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 
 			// then
+			expect(result).toEqual({
+				ok: true,
+				source: "default",
+				config: { strategy: "priority", fallback: true, auto: true, providers: [{ provider: "exa-mcp" }] },
+			});
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given unreadable project config path #when loading #then reports invalid_config instead of defaulting", async () => {
+		const root = await makeTempHome();
+		try {
+			const path = join(root, ".pi", "websearch.json");
+			await mkdir(path, { recursive: true });
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 			expect(result.ok).toBe(false);
 			if (!result.ok) {
-				expect(result.reason).toBe("missing_config");
-				expect(result.message).toContain(".pi/websearch.json");
+				expect(result.reason).toBe("invalid_config");
+				expect(result.source).toBe(path);
+				expect(result.message).toContain("Cannot read");
 			}
 		} finally {
 			await rm(root, { recursive: true, force: true });
@@ -652,6 +669,33 @@ it("#given provider entry with timeoutMs #when loading config #then preserves ti
 });
 
 describe("validateProviderConfig", () => {
+	it.each(["allowedDomains", "blockedDomains"] as const)(
+		"#given whitespace in %s #when validating directly #then rejects the policy before credentials",
+		(key) => {
+			expect(validateProviderConfig({ provider: "exa", [key]: ["   "] })).toEqual({
+				ok: false,
+				reason: "invalid_config",
+				message: `Provider config ${key} must be an array of non-empty domains.`,
+			});
+		},
+	);
+
+	it.each([
+		["openai", " for hosted Responses API search"],
+		["codex", " for hosted Responses API search"],
+		["openai-codex", ""],
+		["exa", ""],
+	] as const)(
+		"#given %s without credentials #when validating #then preserves the provider-specific diagnostic",
+		(provider, suffix) => {
+			expect(validateProviderConfig({ provider, headers: { "X-Trace": "not-a-credential" } })).toEqual({
+				ok: false,
+				reason: "missing_api_key",
+				message: `Provider ${provider} requires apiKey or authentication headers${suffix}.`,
+			});
+		},
+	);
+
 	it("#given non-positive timeoutMs #when validating provider #then config is invalid", () => {
 		// given / when
 		const result = validateProviderConfig({ provider: "exa", apiKey: "exa-test", timeoutMs: 0 });

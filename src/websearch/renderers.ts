@@ -153,6 +153,7 @@ export function renderSearchResult(
 		rows.push(theme.fg("muted", nativeLine));
 	}
 	if (options.expanded && attempts) rows.push(theme.fg("muted", `route ${attempts}`));
+	if (details.answer) rows.push(theme.fg("muted", options.expanded ? details.answer : shorten(details.answer, 240)));
 	const visibleLimit = options.expanded ? 8 : 3;
 	for (const item of details.results.slice(0, visibleLimit)) {
 		rows.push(`${theme.fg("accent", shorten(item.title, 80))} ${theme.fg("dim", shorten(item.url, 100))}`);

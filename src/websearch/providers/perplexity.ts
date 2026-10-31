@@ -4,12 +4,16 @@ import type { BuildContext, ProviderModule } from "./shared.js";
 import {
 	appendDomainFilters,
 	bearerHeaders,
+	chatCompletionAnswer,
+	citationLink,
 	clamp,
 	collect,
 	getArray,
 	getObject,
 	getString,
 	result,
+	SEARCH_INSTRUCTIONS,
+	uniqueSources,
 } from "./shared.js";
 
 function normalizeResultList(items: JsonValue[]): SearchResultItem[] {
@@ -27,21 +31,17 @@ function normalizeResultList(items: JsonValue[]): SearchResultItem[] {
 			}
 			return searchResult;
 		}),
+		Number.POSITIVE_INFINITY,
 	);
 }
 
-function responseText(data: JsonObject): string | undefined {
-	const firstChoice = getObject(getArray(data["choices"])[0]);
-	const message = getObject(firstChoice?.["message"]);
-	return getString(message?.["content"]);
-}
-
-function normalizeCitations(data: JsonObject, snippet: string | undefined): SearchResultItem[] {
+function normalizeCitations(data: JsonObject): SearchResultItem[] {
 	return collect(
 		getArray(data["citations"]).map((raw) => {
 			const url = getString(raw);
-			return result(url, url, snippet);
+			return result(url, url);
 		}),
+		Number.POSITIVE_INFINITY,
 	);
 }
 
@@ -57,11 +57,24 @@ function applyDomainFilter(body: JsonObject, allowedDomains?: string[], blockedD
 }
 
 export const perplexityProvider: ProviderModule = {
+	normalizeAnswer(data) {
+		const answer = chatCompletionAnswer(data);
+		if (!answer) return undefined;
+		// Do not rewrite numeric brackets: they can also be code or URL syntax.
+		const references = getArray(data["citations"]).flatMap((raw, index) => {
+			const url = getString(raw);
+			return url ? [citationLink(String(index + 1), url)] : [];
+		});
+		return references.length ? `${answer}\n\nCitation mapping (provider indices): ${references.join(" ")}` : answer;
+	},
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		if (config.model) {
 			const body: JsonObject = {
 				model: config.model,
-				messages: [{ role: "user", content: domainQuery(request.query, allowedDomains, blockedDomains) }],
+				messages: [
+					{ role: "system", content: SEARCH_INSTRUCTIONS },
+					{ role: "user", content: domainQuery(request.query, allowedDomains, blockedDomains) },
+				],
 			};
 			applyDomainFilter(body, allowedDomains, blockedDomains);
 			if (config.searchContextSize) body["web_search_options"] = { search_context_size: config.searchContextSize };
@@ -85,9 +98,9 @@ export const perplexityProvider: ProviderModule = {
 	},
 	normalizeResponse(data: JsonObject): SearchResultItem[] {
 		const chatResults = normalizeResultList(getArray(data["search_results"]));
-		if (chatResults.length > 0) return chatResults;
 		const searchResults = normalizeResultList(getArray(data["results"]));
-		if (searchResults.length > 0) return searchResults;
-		return normalizeCitations(data, responseText(data));
+		// Citations remain evidence even when per-page snippets are available.
+		// Validate every source before the shared result cap.
+		return uniqueSources([...chatResults, ...searchResults, ...normalizeCitations(data)]);
 	},
 };

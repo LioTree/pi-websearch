@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -23,6 +23,7 @@ import type {
 
 const PROVIDERS: readonly SearchProvider[] = [
 	"exa",
+	"exa-mcp",
 	"tavily",
 	"serpdive",
 	"brave",
@@ -107,6 +108,7 @@ const PROVIDER_ENTRY_KEYS = new Set([
 const SINGLE_PROVIDER_CONFIG_KEYS = new Set([...GLOBAL_CONFIG_KEYS, ...PROVIDER_ENTRY_KEYS]);
 const CREDENTIAL_HEADERS: Record<SearchProvider, readonly string[]> = {
 	exa: ["x-api-key"],
+	"exa-mcp": ["authorization", "x-api-key"],
 	tavily: ["authorization"],
 	serpdive: ["authorization"],
 	brave: ["x-subscription-token"],
@@ -452,13 +454,10 @@ function hasApiKey(config: SearchProviderConfig): boolean {
 }
 
 function hasCredentialHeader(config: SearchProviderConfig): boolean {
-	if (config.headers === undefined) return false;
-	return CREDENTIAL_HEADERS[config.provider].some((credentialName) => {
-		const expected = credentialName.toLowerCase();
-		return Object.entries(config.headers ?? {}).some(
-			([name, value]) => name.toLowerCase() === expected && typeof value === "string" && value.trim().length > 0,
-		);
-	});
+	const names = CREDENTIAL_HEADERS[config.provider];
+	return Object.entries(config.headers ?? {}).some(
+		([name, value]) => names.includes(name.toLowerCase()) && typeof value === "string" && value.trim().length > 0,
+	);
 }
 
 function hasCredentials(config: SearchProviderConfig): boolean {
@@ -490,20 +489,13 @@ function policyProblem(policy: SearchPolicy, label: string): string | undefined 
 	) {
 		return `${label} timeoutMs must be a positive integer no greater than ${MAX_TIMER_MS}.`;
 	}
-	if (policy.allowedDomains !== undefined) {
+	for (const key of ["allowedDomains", "blockedDomains"] as const) {
+		const domains = policy[key];
 		if (
-			!Array.isArray(policy.allowedDomains) ||
-			policy.allowedDomains.some((domain) => typeof domain !== "string" || domain.trim().length === 0)
+			domains !== undefined &&
+			(!Array.isArray(domains) || domains.some((domain) => typeof domain !== "string" || domain.trim().length === 0))
 		) {
-			return `${label} allowedDomains must be an array of non-empty domains.`;
-		}
-	}
-	if (policy.blockedDomains !== undefined) {
-		if (
-			!Array.isArray(policy.blockedDomains) ||
-			policy.blockedDomains.some((domain) => typeof domain !== "string" || domain.trim().length === 0)
-		) {
-			return `${label} blockedDomains must be an array of non-empty domains.`;
+			return `${label} ${key} must be an array of non-empty domains.`;
 		}
 	}
 	if (policy.allowedDomains !== undefined && policy.blockedDomains !== undefined) {
@@ -588,22 +580,14 @@ export function validateProviderConfig(config: SearchProviderEntry): ProviderVal
 		}
 	}
 
-	if ((config.provider === "codex" || config.provider === "openai") && !hasCredentials(config)) {
+	if (config.provider !== "duckduckgo-html" && config.provider !== "exa-mcp" && !hasCredentials(config)) {
+		const suffix =
+			config.provider === "codex" || config.provider === "openai" ? " for hosted Responses API search" : "";
 		return {
 			ok: false,
 			reason: "missing_api_key",
-			message: `Provider ${config.provider} requires apiKey or authentication headers for hosted Responses API search.`,
+			message: `Provider ${config.provider} requires apiKey or authentication headers${suffix}.`,
 		};
-	}
-
-	if (config.provider !== "codex" && config.provider !== "openai" && config.provider !== "duckduckgo-html") {
-		if (!hasCredentials(config)) {
-			return {
-				ok: false,
-				reason: "missing_api_key",
-				message: `Provider ${config.provider} requires apiKey or authentication headers.`,
-			};
-		}
 	}
 
 	return { ok: true, config };
@@ -652,13 +636,9 @@ export function validateWebsearchConfig(
 	return { ok: true, config };
 }
 
-async function fileExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
+/** Used only when no configuration file exists; explicit configs are never merged with this chain. */
+export function defaultWebsearchConfig(): WebsearchConfig {
+	return { strategy: "priority", fallback: true, auto: true, providers: [{ provider: "exa-mcp" }] };
 }
 
 export async function loadWebsearchConfig(options: ConfigLoadOptions): Promise<ConfigLoadResult> {
@@ -670,11 +650,11 @@ export async function loadWebsearchConfig(options: ConfigLoadOptions): Promise<C
 	];
 
 	for (const path of paths) {
-		if (!(await fileExists(path))) continue;
 		let content: string;
 		try {
 			content = await readFile(path, "utf8");
 		} catch (error) {
+			if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
 			const message = error instanceof Error ? error.message : "unknown read error";
 			return { ok: false, reason: "invalid_config", message: `Cannot read ${path}: ${message}`, source: path };
 		}
@@ -691,9 +671,5 @@ export async function loadWebsearchConfig(options: ConfigLoadOptions): Promise<C
 		return { ok: true, config: parsed.value, source: path };
 	}
 
-	return {
-		ok: false,
-		reason: "missing_config",
-		message: "Missing websearch config. Create .pi/websearch.json or ~/.pi/websearch.json before starting pi.",
-	};
+	return { ok: true, config: defaultWebsearchConfig(), source: "default" };
 }

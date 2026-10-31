@@ -10,11 +10,8 @@ import {
 	getString,
 	mergeHeaders,
 	result,
+	SEARCH_INSTRUCTIONS,
 } from "./shared.js";
-
-function searchOnlyPrompt(query: string): string {
-	return `Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: ${query}`;
-}
 
 export function buildResponsesRequest({
 	config,
@@ -29,9 +26,7 @@ export function buildResponsesRequest({
 	if (config.searchContextSize) webSearchTool["search_context_size"] = config.searchContextSize;
 	if (allowedDomains) webSearchTool["filters"] = { allowed_domains: allowedDomains };
 	if (config.userLocation) webSearchTool["user_location"] = { type: "approximate", ...config.userLocation };
-	const input = searchOnlyPrompt(
-		blockedDomains ? appendDomainFilters(request.query, undefined, blockedDomains) : request.query,
-	);
+	const input = blockedDomains ? appendDomainFilters(request.query, undefined, blockedDomains) : request.query;
 
 	const headers = bearerHeaders(config);
 	// This wire format works with both API keys and OAuth. Credentials can be
@@ -46,6 +41,7 @@ export function buildResponsesRequest({
 		},
 		body: {
 			model: config.model ?? "gpt-5.5",
+			instructions: SEARCH_INSTRUCTIONS,
 			input: streaming ? [{ role: "user", content: [{ type: "input_text", text: input }] }] : input,
 			...(streaming ? { store: false, stream: true } : {}),
 			tools: [webSearchTool],
@@ -73,7 +69,7 @@ export function normalizeResponsesPayload(
 			return getArray(action?.["sources"]).map((sourceRaw) => {
 				const source = getObject(sourceRaw);
 				const url = getString(source?.["url"]);
-				return result(url, url);
+				return result(getString(source?.["title"])?.trim() || url, url);
 			});
 		}),
 	);
@@ -84,18 +80,13 @@ export function normalizeResponsesPayload(
 			.map(getObject)
 			.filter((item): item is JsonObject => item !== undefined && item["type"] === "output_text");
 	});
-	const text =
-		contents
-			.map((content) => getString(content["text"]) ?? "")
-			.filter(Boolean)
-			.join("\n") || undefined;
 	const annotationResults = collect(
 		contents.flatMap((content) =>
 			getArray(content["annotations"]).map((raw) => {
 				const item = getObject(raw);
 				if (item?.["type"] !== "url_citation") return null;
 				const url = getString(item["url"]);
-				return result(getString(item["title"]) ?? url, url, getString(content["text"]));
+				return result(getString(item["title"])?.trim() || url, url);
 			}),
 		),
 	);
@@ -105,21 +96,34 @@ export function normalizeResponsesPayload(
 		if (!structured.has(source.url)) structured.set(source.url, source);
 	}
 	if (structured.size > 0) {
-		return collect([...structured.values()]).map((source) => {
-			if (source.snippet || text === undefined) return source;
-			return { ...source, snippet: text };
-		});
+		return collect([...structured.values()]);
 	}
 	if (!options.citationsFallback) return [];
 	return collect(
 		getArray(data["citations"]).map((raw) => {
 			const url = getString(raw);
-			return result(url, url, text);
+			return result(url, url);
 		}),
 	);
 }
 
+export function responsesAnswer(data: JsonObject): string | undefined {
+	if (data["error"] || (data["status"] !== undefined && data["status"] !== "completed")) return undefined;
+	return (
+		getArray(data["output"])
+			.map(getObject)
+			.filter((item) => item?.["type"] === "message")
+			.flatMap((item) => getArray(item?.["content"]))
+			.map(getObject)
+			.filter((item) => item?.["type"] === "output_text")
+			.map((item) => getString(item?.["text"]) ?? "")
+			.filter(Boolean)
+			.join("\n") || undefined
+	);
+}
+
 export const openAiResponsesProvider: ProviderModule = {
+	normalizeAnswer: responsesAnswer,
 	buildRequest(ctx: BuildContext): BuiltSearchRequest {
 		return buildResponsesRequest(ctx);
 	},

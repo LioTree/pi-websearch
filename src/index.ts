@@ -8,14 +8,13 @@ import type { ConfigLoadResult, WebsearchConfig } from "./websearch/types.js";
 
 const STATUS_KEY = "pi-websearch";
 const WIDGET_KEY = "pi-websearch";
-const MISSING_CONFIG_MESSAGE =
-	"Missing websearch config. Create .pi/websearch.json or ~/.pi/websearch.json before starting pi.";
+const CONFIG_PENDING_MESSAGE = "Websearch configuration has not been loaded yet.";
 
 export default function (pi: ExtensionAPI): void {
 	let state: ConfigLoadResult = {
 		ok: false,
-		reason: "missing_config",
-		message: MISSING_CONFIG_MESSAGE,
+		reason: "invalid_config",
+		message: CONFIG_PENDING_MESSAGE,
 	};
 
 	function providerList(config: WebsearchConfig): string {

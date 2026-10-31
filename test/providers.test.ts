@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { EmptyDomainPolicyError } from "../src/websearch/domains.js";
+import { SEARCH_INSTRUCTIONS } from "../src/websearch/providers/shared.js";
 import { buildSearchRequest, isDirectSearchProvider, normalizeSearchResponse } from "../src/websearch/providers.js";
 import type { SearchProvider, SearchProviderConfig } from "../src/websearch/types.js";
 
@@ -226,13 +227,15 @@ describe("buildSearchRequest", () => {
 		expect(request.init.headers).toHaveProperty("Authorization", "Bearer openai-test");
 		expect(request.body).toEqual({
 			model: "gpt-5.5",
+			instructions:
+				"Search the web and return a concise answer grounded only in the web results.\nInclude clickable source citations in the response text when possible.",
 			input: [
 				{
 					role: "user",
 					content: [
 						{
 							type: "input_text",
-							text: "Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: latest OpenAI web search docs",
+							text: "latest OpenAI web search docs",
 						},
 					],
 				},
@@ -259,7 +262,9 @@ describe("buildSearchRequest", () => {
 		// then
 		expect(request.body).toEqual({
 			model: "gpt-5.5",
-			input: "Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: latest docs -site:spam.example.com",
+			instructions:
+				"Search the web and return a concise answer grounded only in the web results.\nInclude clickable source citations in the response text when possible.",
+			input: "latest docs -site:spam.example.com",
 			tools: [{ type: "web_search", external_web_access: true }],
 			include: ["web_search_call.action.sources"],
 			tool_choice: "required",
@@ -307,7 +312,10 @@ describe("buildSearchRequest", () => {
 		expect(request.init.headers).toHaveProperty("Authorization", "Bearer pplx-test");
 		expect(request.body).toEqual({
 			model: "sonar-pro",
-			messages: [{ role: "user", content: "search api docs" }],
+			messages: [
+				{ role: "system", content: SEARCH_INSTRUCTIONS },
+				{ role: "user", content: "search api docs" },
+			],
 			search_domain_filter: ["docs.example.com"],
 		});
 	});
@@ -330,6 +338,7 @@ describe("buildSearchRequest", () => {
 		expect(request.init.headers).toHaveProperty("Authorization", "Bearer xai-test");
 		expect(request.body).toEqual({
 			model: "grok-4.3",
+			instructions: SEARCH_INSTRUCTIONS,
 			input: "current xai docs",
 			tools: [{ type: "web_search", filters: { excluded_domains: ["spam.example.com"] } }],
 			tool_choice: "required",
@@ -356,6 +365,7 @@ describe("buildSearchRequest", () => {
 		expect(request.init.headers).toHaveProperty("anthropic-version", "2023-06-01");
 		expect(request.body).toEqual({
 			model: "claude-sonnet-4-5-20250929",
+			system: [{ type: "text", text: SEARCH_INSTRUCTIONS }],
 			max_tokens: 1024,
 			messages: [{ role: "user", content: "current anthropic search docs" }],
 			tools: [
@@ -383,7 +393,10 @@ describe("buildSearchRequest", () => {
 		expect(request.init.headers).toHaveProperty("Authorization", "Bearer zai-test");
 		expect(request.body).toEqual({
 			model: "glm-4.6",
-			messages: [{ role: "user", content: "financial news" }],
+			messages: [
+				{ role: "system", content: SEARCH_INSTRUCTIONS },
+				{ role: "user", content: "financial news" },
+			],
 			tools: [
 				{
 					type: "web_search",
@@ -582,7 +595,7 @@ describe("normalizeSearchResponse", () => {
 		const results = normalizeSearchResponse("codex", payload);
 
 		// then
-		expect(results).toEqual([{ title: "OpenAI", url: "https://openai.com", snippet: "Answer with source" }]);
+		expect(results).toEqual([{ title: "OpenAI", url: "https://openai.com" }]);
 	});
 
 	it("#given openai response with a URL only in prose #when normalizing #then ignores the unverified URL", () => {
@@ -695,7 +708,7 @@ describe("normalizeSearchResponse", () => {
 		const results = normalizeSearchResponse("xai", payload);
 
 		// then
-		expect(results).toEqual([{ title: "https://x.ai", url: "https://x.ai", snippet: "Answer from Grok" }]);
+		expect(results).toEqual([{ title: "https://x.ai", url: "https://x.ai" }]);
 	});
 
 	it("#given anthropic response #when normalizing #then extracts web search tool results", () => {
@@ -725,7 +738,6 @@ describe("normalizeSearchResponse", () => {
 			{
 				title: "Anthropic",
 				url: "https://docs.anthropic.com",
-				snippet: "Answer with Anthropic source",
 				publishedAt: "2026-01-01",
 			},
 		]);
@@ -1051,8 +1063,8 @@ describe("perplexity citations", () => {
 
 		// then
 		expect(results).toEqual([
-			{ title: "https://one.example.com", url: "https://one.example.com", snippet: "Answer with sources" },
-			{ title: "https://two.example.com", url: "https://two.example.com", snippet: "Answer with sources" },
+			{ title: "https://one.example.com", url: "https://one.example.com" },
+			{ title: "https://two.example.com", url: "https://two.example.com" },
 		]);
 	});
 });
@@ -1151,7 +1163,7 @@ describe("domain policy request construction", () => {
 				content: [
 					{
 						type: "input_text",
-						text: "Find web pages matching any of these search terms or quoted phrases. If the query contains OR, search each alternative independently. Return only relevant source URLs, one per line. Query: current docs -site:ads.example.com",
+						text: "current docs -site:ads.example.com",
 					},
 				],
 			},
@@ -1173,6 +1185,7 @@ describe("domain policy request construction", () => {
 		// then
 		expect(request.body).toEqual({
 			model: "claude-sonnet-4-5-20250929",
+			system: [{ type: "text", text: SEARCH_INSTRUCTIONS }],
 			max_tokens: 1024,
 			messages: [{ role: "user", content: "current docs -site:ads.example.com" }],
 			tools: [
@@ -1200,6 +1213,7 @@ describe("domain policy request construction", () => {
 		// then
 		expect(request.body).toEqual({
 			model: "claude-sonnet-4-5-20250929",
+			system: [{ type: "text", text: SEARCH_INSTRUCTIONS }],
 			max_tokens: 1024,
 			messages: [{ role: "user", content: "current docs" }],
 			tools: [
@@ -1228,6 +1242,7 @@ describe("domain policy request construction", () => {
 		// then
 		expect(request.body).toEqual({
 			model: "grok-4.3",
+			instructions: SEARCH_INSTRUCTIONS,
 			input: "current docs -site:ads.example.com",
 			tools: [{ type: "web_search", filters: { allowed_domains: ["example.com"] } }],
 			tool_choice: "required",
@@ -1269,7 +1284,10 @@ describe("domain policy request construction", () => {
 		// then
 		expect(request.body).toEqual({
 			model: "sonar-pro",
-			messages: [{ role: "user", content: "current docs -site:ads.example.com" }],
+			messages: [
+				{ role: "system", content: SEARCH_INSTRUCTIONS },
+				{ role: "user", content: "current docs -site:ads.example.com" },
+			],
 			search_domain_filter: ["example.com"],
 		});
 	});

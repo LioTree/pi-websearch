@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.0 - 2026-10-31
+
+### Added
+
+- Independent `exa-mcp` direct-search backend for Exa's official anonymous hosted `web_search_exa` tool, with bounded JSON/SSE decoding, source-record parsing, domain enforcement, typed failures, and explicit free-tier quota handling. Existing authenticated `exa` REST and `duckduckgo-html` providers remain available.
+
+### Changed
+
+- A missing configuration file now activates native-first search with only anonymous Exa MCP as fallback. Raw mode remains off by default. Explicit provider chains are preserved without hidden additions; invalid or unreadable config files still fail instead of using defaults.
+- Separate search redaction, routing order, and result text formatting into focused modules while retaining existing search exports.
+- Simplify per-attempt failure handling and centralize timer and cancellation-listener cleanup. Reuse domain policies rather than repeatedly copying and merging them.
+- Consolidate repeated configuration validation and credential checks without changing provider authentication requirements. Remove the unused shared `unique` helper.
+
+### Fixed
+
+- Share concise grounded-answer and clickable-citation instructions across model-search adapters. Direct-search requests are unchanged.
+- Preserve model answers once, separately from structured sources, in tool text and typed TUI details. Retain genuine page snippets rather than copying whole answers into source snippets. Direct-search modes do not emit generated answers.
+- Preserve sources with empty titles by falling back to their URL. Deduplicate streamed output by item identity with terminal snapshots taking precedence. Reject mixed-source answers when source validation or domain filtering excludes their evidence.
+
+### Verification
+
+- 529 tests pass, including regression coverage for attempt resource cleanup, cancellation, diagnostic redaction, and configuration validation.
+- Compare pre-cleanup and refactored behavior across 936 mocked search scenarios and 1,440 configuration scenarios; no differences found. This comparison is not live-provider verification.
+
 ## 0.5.2 - 2026-10-30
 
 ### Fixed

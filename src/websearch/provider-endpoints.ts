@@ -2,6 +2,7 @@ import type { NativeSearchAdapter, SearchProvider, SearchProviderConfig } from "
 
 const DEFAULT_PROVIDER_URLS: Record<SearchProvider, string> = {
 	exa: "https://api.exa.ai/search",
+	"exa-mcp": "https://mcp.exa.ai/mcp",
 	tavily: "https://api.tavily.com/search",
 	serpdive: "https://api.serpdive.com/v1/search",
 	brave: "https://api.search.brave.com/res/v1/web/search",

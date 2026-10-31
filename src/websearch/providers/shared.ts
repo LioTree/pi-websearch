@@ -1,4 +1,4 @@
-import { type DomainPolicy, mergeDomainFilters } from "../domains.js";
+import { mergeDomainFilters } from "../domains.js";
 import type {
 	BuiltSearchRequest,
 	JsonObject,
@@ -7,6 +7,23 @@ import type {
 	SearchRequest,
 	SearchResultItem,
 } from "../types.js";
+
+export const SEARCH_INSTRUCTIONS =
+	"Search the web and return a concise answer grounded only in the web results.\nInclude clickable source citations in the response text when possible.";
+
+/** Keep provider citation targets intact when embedding them in Markdown. */
+export function citationLink(label: string, url: string): string {
+	const target = url.replace(
+		/[\\\\()<>\s]/g,
+		(character) => `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
+	);
+	return `[${label}](${target})`;
+}
+
+export function chatCompletionAnswer(data: JsonObject): string | undefined {
+	const choice = getObject(getArray(data["choices"])[0]);
+	return getString(getObject(choice?.["message"])?.["content"]);
+}
 
 export interface BuildContext {
 	config: SearchProviderConfig;
@@ -19,6 +36,7 @@ export interface BuildContext {
 export interface ProviderModule {
 	buildRequest(ctx: BuildContext): BuiltSearchRequest;
 	normalizeResponse(data: JsonObject): SearchResultItem[];
+	normalizeAnswer?(data: JsonObject): string | undefined;
 }
 
 export type HeaderSource = Record<string, string | null> | undefined;
@@ -183,17 +201,6 @@ export function appendDomainFilters(query: string, allowedDomains?: string[], bl
 	return parts.join(" ");
 }
 
-export function unique(values: string[]): string[] {
-	return [...new Set(values)];
-}
-
-function domainPolicy(allowedDomains: string[] | undefined, blockedDomains: string[] | undefined): DomainPolicy {
-	return {
-		...(allowedDomains === undefined ? {} : { allowedDomains }),
-		...(blockedDomains === undefined ? {} : { blockedDomains }),
-	};
-}
-
 /**
  * Merge provider-entry policy with the request policy (which already includes global
  * constraints). Throw EmptyDomainPolicyError for an empty allowed intersection so the
@@ -203,10 +210,7 @@ export function resolveDomainFilters(
 	config: SearchProviderConfig,
 	request: SearchRequest,
 ): { allowedDomains?: string[]; blockedDomains?: string[] } {
-	return mergeDomainFilters(
-		domainPolicy(config.allowedDomains, config.blockedDomains),
-		domainPolicy(request.allowedDomains, request.blockedDomains),
-	);
+	return mergeDomainFilters(config, request);
 }
 
 export function isJsonObject(value: unknown): value is JsonObject {
@@ -242,6 +246,15 @@ export function result(
 	if (source) item.source = source;
 	if (score !== undefined) item.score = score;
 	return item;
+}
+
+/** Merge source evidence without replacing existing per-page snippets. */
+export function uniqueSources(items: SearchResultItem[]): SearchResultItem[] {
+	const sources = new Map<string, SearchResultItem>();
+	for (const item of items) {
+		if (!sources.has(item.url)) sources.set(item.url, item);
+	}
+	return [...sources.values()];
 }
 
 export function collect(items: Array<SearchResultItem | null>, max = 50): SearchResultItem[] {

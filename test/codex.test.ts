@@ -227,9 +227,8 @@ describe("Codex subscription search", () => {
 			vi.stubGlobal("fetch", async () => streamResponse([completion(undefined, type)]));
 			const details = await performProviderSearch(entry, request);
 			expect(details.error).toBeUndefined();
-			expect(details.results).toEqual([
-				{ title: "Search docs", url: "https://docs.example/search", snippet: "A cited summary." },
-			]);
+			expect(details.answer).toBe("A cited summary.");
+			expect(details.results).toEqual([{ title: "Search docs", url: "https://docs.example/search" }]);
 		},
 	);
 

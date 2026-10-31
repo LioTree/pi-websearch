@@ -1,5 +1,5 @@
 import type { BuiltSearchRequest, JsonObject, SearchResultItem } from "../types.js";
-import { buildResponsesRequest, normalizeResponsesPayload } from "./openai-responses.js";
+import { buildResponsesRequest, normalizeResponsesPayload, responsesAnswer } from "./openai-responses.js";
 import type { BuildContext, ProviderModule } from "./shared.js";
 import { bearerHeaders, getHeader, getObject, getString, hasHeaderTombstone, isJsonObject } from "./shared.js";
 
@@ -41,6 +41,7 @@ function subscriptionHeaders(ctx: BuildContext): Record<string, string> {
 
 /** ChatGPT subscription transport, separate from the legacy `codex` API-key backend. */
 export const codexSubscriptionProvider: ProviderModule = {
+	normalizeAnswer: responsesAnswer,
 	buildRequest(ctx: BuildContext): BuiltSearchRequest {
 		const built = buildResponsesRequest(ctx);
 		return {
@@ -49,7 +50,6 @@ export const codexSubscriptionProvider: ProviderModule = {
 			init: { method: "POST", headers: subscriptionHeaders(ctx) },
 			body: {
 				...built.body,
-				instructions: "Use web search for the user's query. Return concise findings with source citations.",
 				input: [
 					{
 						role: "user",

@@ -1,7 +1,7 @@
 {
 	"name": "pi-websearch",
-	"version": "0.5.2",
-	"description": "Provider-backed web search tool for pi-coding-agent with config-gated activation, TUI status, and source-aware results.",
+	"version": "0.6.0",
+	"description": "Provider-backed web search tool for pi-coding-agent with anonymous Exa MCP defaults, TUI status, and source-aware results.",
 	"type": "module",
 	"license": "MIT",
 	"homepage": "https://github.com/LioTree/pi-websearch",
